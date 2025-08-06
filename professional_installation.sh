@@ -196,6 +196,12 @@ EOF
 build_frontend() {
     log "Building frontend application..."
     
+    # Copy project files to application directory
+    log "Copying project files..."
+    cp -r . $APP_DIR/
+    chown -R $SERVICE_USER:$SERVICE_USER $APP_DIR
+    chmod -R 755 $APP_DIR
+    
     cd $APP_DIR
     
     # Install Node.js dependencies
