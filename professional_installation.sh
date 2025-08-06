@@ -150,7 +150,7 @@ install_python_dependencies() {
         uvicorn[standard] \
         firebase-admin \
         pyrebase4 \
-        google-cloud-resourcemanager \
+        google-cloud-resource-manager \
         requests \
         python-multipart \
         python-jose[cryptography] \
