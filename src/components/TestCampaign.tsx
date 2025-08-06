@@ -24,7 +24,7 @@ export const TestCampaign = () => {
 
   const activeProfileName = profiles.find(p => p.id === activeProfile)?.name || 'All Projects';
 
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://139.59.213.238:8000';
 
   const handleProjectToggle = (projectId: string) => {
     setSelectedProjects(prev =>

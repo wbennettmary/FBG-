@@ -21,7 +21,7 @@ interface EnhancedCampaignMonitorProps {
   campaignId: string;
 }
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://139.59.213.238:8000';
 
 export const EnhancedCampaignMonitor: React.FC<EnhancedCampaignMonitorProps> = ({ campaignId }) => {
   const [campaign, setCampaign] = useState<Campaign | null>(null);

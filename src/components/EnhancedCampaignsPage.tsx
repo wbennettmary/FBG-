@@ -31,7 +31,7 @@ import { useToast } from '@/hooks/use-toast';
 import { EnhancedCampaignMonitor } from './EnhancedCampaignMonitor';
 import { Dialog as ConfirmDialog, DialogContent as ConfirmDialogContent, DialogHeader as ConfirmDialogHeader, DialogTitle as ConfirmDialogTitle } from '@/components/ui/dialog';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://139.59.213.238:8000';
 
 export const EnhancedCampaignsPage = () => {
   const { 

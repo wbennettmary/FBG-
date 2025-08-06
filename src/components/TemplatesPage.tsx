@@ -11,7 +11,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import JSON5 from 'json5'; // Add at the top for robust JSON parsing
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://139.59.213.238:8000';
 
 export const TemplatesPage = () => {
   const { projects, profiles, activeProfile, addProject, reloadProjectsAndProfiles } = useEnhancedApp();
