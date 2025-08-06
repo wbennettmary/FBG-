@@ -150,7 +150,7 @@ install_python_dependencies() {
         uvicorn[standard]==0.24.0 \
         firebase-admin==6.2.0 \
         pyrebase4==4.7.1 \
-        google-cloud-resourcemanager==1.10.3 \
+        google-cloud-resourcemanager \
         requests==2.31.0 \
         python-multipart==0.0.6 \
         python-jose[cryptography]==3.3.0 \
