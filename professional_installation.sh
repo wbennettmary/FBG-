@@ -200,7 +200,7 @@ build_frontend() {
     
     # Install Node.js dependencies
     log "Installing Node.js dependencies..."
-    npm ci --production=false
+    npm install
     
     # Build frontend
     log "Building frontend for production..."
