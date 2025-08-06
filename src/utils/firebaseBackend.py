@@ -1026,7 +1026,7 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
         app_name = f"{project_id}_{os.getpid()}_{uuid.uuid4().hex[:6]}"
     
     # For unique app names, we can safely initialize without checking
-    firebase_app = firebase_admin.initialize_app(cred, name=app_name)
+        firebase_app = firebase_admin.initialize_app(cred, name=app_name)
     logger.info(f"Initialized Firebase app {app_name} for campaign processing")
     
     firebase_config = project.get("firebaseConfig")
@@ -1848,12 +1848,12 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
                         
                         # Update with new domains
                         domain_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config?updateMask=authorizedDomains"
-                        domain_payload = {
+                domain_payload = {
                             "authorizedDomains": current_domains
                         }
                         
-                        domain_response = authed_session.patch(domain_url, json=domain_payload)
-                        domain_response.raise_for_status()
+                    domain_response = authed_session.patch(domain_url, json=domain_payload)
+                    domain_response.raise_for_status()
                         logger.info(f"Successfully updated authorized domains for project {project_id}: {current_domains}")
                     else:
                         logger.info(f"Domain {new_domain} already authorized for project {project_id}")

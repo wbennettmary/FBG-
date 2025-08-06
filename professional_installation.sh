@@ -146,6 +146,8 @@ install_python_dependencies() {
     
     # Install Python packages
     pip install \
+        setuptools \
+        wheel \
         fastapi \
         uvicorn[standard] \
         firebase-admin \
