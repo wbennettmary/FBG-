@@ -18,7 +18,7 @@ build/
 .env.test.local
 .env.production.local
 
-# Firebase and API keys (sensitive data)
+# Firebase and API keys (sensitive data - EXCLUDE THESE)
 admin_service_account.json
 apikeys.txt
 private_keys.json
@@ -101,7 +101,6 @@ dist
 
 # Gatsby files
 .cache/
-public
 
 # Storybook build outputs
 .out
@@ -145,13 +144,6 @@ venv.bak/
 *.backup
 *.bak
 *.old
-
-# Server-specific files
-setup-server.sh
-complete_installation.sh
-professional_installation.sh
-nginx-config.conf
-firebase-backend.service
 
 # Old directories (already cleaned)
 old versions/
