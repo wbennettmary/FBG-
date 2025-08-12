@@ -11,12 +11,8 @@ pydantic
 firebase-admin
 pyrebase4
 google-auth
-google-oauth
 google-api-python-client
-google-cloud-core
 google-cloud-resource-manager
-google-auth-oauthlib
-google-auth-httplib2
 
 # Environment & Configuration
 python-dotenv
@@ -41,4 +37,4 @@ alembic
 gunicorn
 
 # Additional Python utilities
-concurrent-futures 
+# (concurrent.futures is built into Python 3) 

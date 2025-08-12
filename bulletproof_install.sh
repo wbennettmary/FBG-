@@ -138,10 +138,7 @@ pip install \
     firebase-admin \
     pyrebase4 \
     google-auth \
-    google-oauth \
     google-api-python-client \
-    google-cloud-core \
-    google-cloud-resource-manager \
     psycopg2-binary \
     fastapi \
     uvicorn \
