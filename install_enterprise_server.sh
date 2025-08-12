@@ -13,9 +13,6 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-DB_USER="emedia"
-DB_PASSWORD="Batata010..++"
-DB_NAME="firebase_manager"
 APP_DIR="/var/www/firebase-manager"
 SERVICE_USER="firebase"
 SERVICE_GROUP="firebase"
@@ -100,16 +97,12 @@ print_info "🧹 Performing complete cleanup of any existing installation..."
 print_info "Stopping existing services..."
 systemctl stop firebase-manager 2>/dev/null || true
 systemctl stop nginx 2>/dev/null || true
-systemctl stop postgresql 2>/dev/null || true
-systemctl stop redis-server 2>/dev/null || true
 systemctl stop supervisor 2>/dev/null || true
 
 # Disable services
 print_info "Disabling existing services..."
 systemctl disable firebase-manager 2>/dev/null || true
 systemctl disable nginx 2>/dev/null || true
-systemctl disable postgresql 2>/dev/null || true
-systemctl disable redis-server 2>/dev/null || true
 systemctl disable supervisor 2>/dev/null || true
 
 # Remove application files
@@ -147,9 +140,6 @@ PACKAGES=(
     "python3"
     "python3-pip" 
     "python3-venv"
-    "postgresql"
-    "postgresql-contrib"
-    "redis-server"
     "nginx"
     "supervisor"
     "curl"
@@ -162,7 +152,6 @@ PACKAGES=(
     "gnupg"
     "lsb-release"
     "build-essential"
-    "libpq-dev"
     "python3-dev"
 )
 
@@ -274,56 +263,8 @@ else
     fi
 fi
 
-# Start and enable services
-print_info "Starting and enabling services..."
-systemctl start postgresql
-systemctl enable postgresql
-systemctl start redis-server
-systemctl enable redis-server
-
-# Configure PostgreSQL
-print_info "Configuring PostgreSQL..."
-
-# Ensure PostgreSQL is running and accessible
-print_info "Verifying PostgreSQL service..."
-if ! systemctl is-active --quiet postgresql; then
-    print_error "PostgreSQL service is not running"
-    systemctl start postgresql
-    sleep 3
-fi
-
-# Clean up existing database and user
-print_info "Cleaning up existing PostgreSQL data..."
-cd /tmp  # Change to a safe directory
-sudo -u postgres psql -c "DROP DATABASE IF EXISTS $DB_NAME;" 2>/dev/null || true
-sudo -u postgres psql -c "DROP USER IF EXISTS $DB_USER;" 2>/dev/null || true
-
-# Create fresh database and user
-print_info "Creating fresh database and user..."
-sudo -u postgres psql -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASSWORD';" || {
-    print_error "Failed to create PostgreSQL user"
-    exit 1
-}
-sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" || {
-    print_error "Failed to create PostgreSQL database"
-    exit 1
-}
-sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;" || {
-    print_error "Failed to grant privileges"
-    exit 1
-}
-sudo -u postgres psql -c "ALTER USER $DB_USER CREATEDB;" || {
-    print_error "Failed to alter user permissions"
-    exit 1
-}
-
-print_success "PostgreSQL configuration completed successfully"
-
-# Configure Redis
-print_info "Configuring Redis..."
-sed -i 's/# maxmemory <bytes>/maxmemory 256mb/' /etc/redis/redis.conf
-sed -i 's/# maxmemory-policy noeviction/maxmemory-policy allkeys-lru/' /etc/redis/redis.conf
-systemctl restart redis-server
+# Skip PostgreSQL and Redis - using JSON files
+print_info "Skipping PostgreSQL and Redis setup - backend will use JSON files"
 
 # Create application directory and user
 print_info "Creating application directory and user..."
@@ -489,90 +430,34 @@ asyncio.run(create_basic_tables())
 fi
 
 # Create environment file
-print_info "Creating environment configuration..."
-cat > $APP_DIR/.env << EOF
-# Enterprise Server Configuration
-SERVER_HOST=0.0.0.0
-SERVER_PORT=8000
-DEBUG=false
-ENVIRONMENT=production
-
-# Database Configuration
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=$DB_NAME
-DB_USER=$DB_USER
-DB_PASSWORD=$DB_PASSWORD
-DB_URL=postgresql://$DB_USER:$DB_PASSWORD@localhost:5432/$DB_NAME
-
-# Redis Configuration
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_DB=0
-REDIS_PASSWORD=
-
-# Security
-SECRET_KEY=$(openssl rand -hex 32)
-JWT_SECRET_KEY=$(openssl rand -hex 32)
-ACCESS_TOKEN_EXPIRE_MINUTES=30
-
-# SMTP Configuration
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USERNAME=your-email@gmail.com
-SMTP_PASSWORD=your-app-password
-SMTP_FROM=your-email@gmail.com
-SMTP_USE_TLS=true
-
-# Rate Limiting
-RATE_LIMIT_PER_MINUTE=100
-RATE_LIMIT_PER_HOUR=1000
-
-# Logging
-LOG_LEVEL=INFO
-LOG_FORMAT=json
-
-# Monitoring
-ENABLE_METRICS=true
-METRICS_PORT=9090
-
-# File Storage
-UPLOAD_DIR=$APP_DIR/uploads
-MAX_FILE_SIZE=10485760
-EOF
-
-chown $SERVICE_USER:$SERVICE_GROUP $APP_DIR/.env
-chmod 600 $APP_DIR/.env
+# Environment configuration will be created later for JSON-based backend
 
 # Create uploads directory
 mkdir -p $APP_DIR/uploads
 chown -R $SERVICE_USER:$SERVICE_GROUP $APP_DIR/uploads
 
-# Run database migrations (if not already done)
-print_info "Running database migrations..."
+# Skip database migrations for now - use JSON files
+print_info "Setting up backend to use JSON files (database migrations skipped)..."
 cd $APP_DIR
-if ! sudo -u $SERVICE_USER $APP_DIR/venv/bin/python -m src.database.migrations 2>/dev/null; then
-    print_warning "Database migrations failed or already completed. Creating fallback configuration..."
-    
-    # Create a fallback .env file that uses JSON files instead of database
-    cat > $APP_DIR/.env << EOF
-# Fallback Configuration - Using JSON files instead of database
+
+# Create configuration for JSON-based backend
+cat > $APP_DIR/.env << EOF
+# Configuration for JSON-based backend
 USE_DATABASE=false
 USE_JSON_FILES=true
 BACKEND_PORT=8000
 LOG_LEVEL=INFO
 EOF
-    
-    print_info "Fallback configuration created - backend will use JSON files"
-fi
+
+print_info "Backend will use existing JSON files for data storage"
 
 # Create systemd service
 print_info "Creating systemd service..."
 cat > /etc/systemd/system/firebase-manager.service << EOF
 [Unit]
 Description=Firebase Manager Enterprise Server
-After=network.target postgresql.service redis-server.service
-Wants=postgresql.service redis-server.service
+After=network.target
+Wants=network.target
 
 [Service]
 Type=exec

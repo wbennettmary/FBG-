@@ -15,21 +15,21 @@ passlib[bcrypt]
 aiofiles
 httpx
 
-# Database
-asyncpg
-psycopg2-binary
-sqlalchemy[asyncio]
-alembic
+# Database (commented out - using JSON files for now)
+# asyncpg
+# psycopg2-binary
+# sqlalchemy[asyncio]
+# alembic
 
-# Caching & Performance
-redis
-aioredis
-prometheus-client
-structlog
+# Caching & Performance (commented out - using JSON files for now)
+# redis
+# aioredis
+# prometheus-client
+# structlog
 
 # Production Server
 gunicorn
 
 # Security & Monitoring
-slowapi
-healthcheck 
+# slowapi
+# healthcheck 
