@@ -31,12 +31,115 @@ export const ProfileManager = () => {
   // Update formData state to only use 'name'
   const [formData, setFormData] = useState<{ name: string }>({ name: '' });
 
+  // App Users (Admin) Management State
+  const [appUsers, setAppUsers] = useState<{ username: string; role: string }[]>([]);
+  const [appUsersLoading, setAppUsersLoading] = useState(false);
+  const [newUser, setNewUser] = useState({ username: '', password: '', role: 'member' });
+  const [adminUser, setAdminUser] = useState(localStorage.getItem('admin-basic-user') || 'admin');
+  const [adminPass, setAdminPass] = useState(localStorage.getItem('admin-basic-pass') || 'admin');
+  const [showPasswords, setShowPasswords] = useState(false);
+  const appRole = typeof window !== 'undefined' ? localStorage.getItem('app-role') || 'member' : 'member';
+
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+
+  const getAdminHeaders = () => ({
+    'Content-Type': 'application/json',
+    'Authorization': 'Basic ' + btoa(`${adminUser}:${adminPass}`)
+  });
+
+  const loadAppUsers = async () => {
+    setAppUsersLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/app-users`, { headers: getAdminHeaders() });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setAppUsers(data.users || []);
+    } catch (e: any) {
+      toast({ title: 'Failed to load app users', description: e?.message || 'Auth required (admin).', variant: 'destructive' });
+    } finally {
+      setAppUsersLoading(false);
+    }
+  };
+
+  const saveAdminCreds = () => {
+    localStorage.setItem('admin-basic-user', adminUser);
+    localStorage.setItem('admin-basic-pass', adminPass);
+    toast({ title: 'Admin credentials saved', description: 'Using Basic auth for admin endpoints.' });
+    loadAppUsers();
+  };
+
+  const addAppUser = async () => {
+    if (!newUser.username.trim() || !newUser.password.trim()) {
+      toast({ title: 'Missing fields', description: 'Username and password are required.', variant: 'destructive' });
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE_URL}/app-users`, {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify(newUser)
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setNewUser({ username: '', password: '', role: 'member' });
+      await loadAppUsers();
+      toast({ title: 'User added', description: 'App user created successfully.' });
+    } catch (e: any) {
+      toast({ title: 'Add failed', description: e?.message || 'Could not add user.', variant: 'destructive' });
+    }
+  };
+
+  const updateUserRole = async (username: string, role: string) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/app-users/${encodeURIComponent(username)}`, {
+        method: 'PUT',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ role })
+      });
+      if (!res.ok) throw new Error(await res.text());
+      await loadAppUsers();
+      toast({ title: 'Role updated', description: `${username} is now ${role}.` });
+    } catch (e: any) {
+      toast({ title: 'Update failed', description: e?.message || 'Could not update role.', variant: 'destructive' });
+    }
+  };
+
+  const resetUserPassword = async (username: string) => {
+    const pwd = prompt(`Enter new password for ${username}`);
+    if (!pwd) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/app-users/${encodeURIComponent(username)}`, {
+        method: 'PUT',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ password: pwd })
+      });
+      if (!res.ok) throw new Error(await res.text());
+      toast({ title: 'Password reset', description: `Password updated for ${username}.` });
+    } catch (e: any) {
+      toast({ title: 'Reset failed', description: e?.message || 'Could not reset password.', variant: 'destructive' });
+    }
+  };
+
+  const deleteAppUser = async (username: string) => {
+    if (!confirm(`Delete user ${username}?`)) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/app-users/${encodeURIComponent(username)}`, {
+        method: 'DELETE',
+        headers: getAdminHeaders(),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      await loadAppUsers();
+      toast({ title: 'User deleted', description: `${username} removed.` });
+    } catch (e: any) {
+      toast({ title: 'Delete failed', description: e?.message || 'Could not delete user.', variant: 'destructive' });
+    }
+  };
+
   // Count projects per profile
   const getProjectCount = (profileId: string) => {
     return projects.filter(p => p.profileId === profileId).length;
   };
 
-  const handleCreateProfile = () => {
+  const handleCreateProfile = async () => {
     if (!formData.name.trim()) {
       toast({
         title: "Error",
@@ -46,19 +149,30 @@ export const ProfileManager = () => {
       return;
     }
 
-    addProfile({
-      name: formData.name,
-      description: '', // Keep description empty for new profiles
-      projectIds: [],
-    });
+    try {
+      console.log('ProfileManager: Creating profile with name:', formData.name);
+      
+      await addProfile({
+        name: formData.name,
+        description: '', // Keep description empty for new profiles
+        projectIds: [],
+      });
 
-    setFormData({ name: '' });
-    setShowCreateDialog(false);
-    
-    toast({
-      title: "Profile Created",
-      description: `Profile "${formData.name}" has been created successfully.`,
-    });
+      setFormData({ name: '' });
+      setShowCreateDialog(false);
+      
+      toast({
+        title: "Profile Created",
+        description: `Profile "${formData.name}" has been created successfully.`,
+      });
+    } catch (error) {
+      console.error('ProfileManager: Error creating profile:', error);
+      toast({
+        title: "Error",
+        description: `Failed to create profile: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        variant: "destructive",
+      });
+    }
   };
 
   const handleEditProfile = (profile: Profile) => {
@@ -112,7 +226,7 @@ export const ProfileManager = () => {
     if (!selectedProfileForLinking) return;
 
     try {
-      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://139.59.213.238:8000';
+      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
       await fetch(`${API_BASE_URL}/profiles/${selectedProfileForLinking.id}/link-projects`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -139,7 +253,7 @@ export const ProfileManager = () => {
     if (!selectedProfileForLinking) return;
 
     try {
-      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://139.59.213.238:8000';
+      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
       await fetch(`${API_BASE_URL}/profiles/${selectedProfileForLinking.id}/unlink-projects`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -230,6 +344,90 @@ export const ProfileManager = () => {
           </Button>
         </div>
       </div>
+
+      {/* App Users Admin (visible for admin role) */}
+      {appRole === 'admin' && (
+        <Card className="bg-gray-800 border-gray-700">
+          <CardHeader>
+            <CardTitle className="text-white">App Users (Admin)</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div>
+                <Label className="text-gray-300">Admin Username (Basic Auth)</Label>
+                <Input value={adminUser} onChange={e => setAdminUser(e.target.value)} className="bg-gray-700 border-gray-600 text-white" />
+              </div>
+              <div>
+                <Label className="text-gray-300">Admin Password (Basic Auth)</Label>
+                <Input type={showPasswords ? 'text' : 'password'} value={adminPass} onChange={e => setAdminPass(e.target.value)} className="bg-gray-700 border-gray-600 text-white" />
+              </div>
+              <div className="flex items-end gap-2">
+                <Button onClick={saveAdminCreds} className="bg-blue-600 hover:bg-blue-700">Save</Button>
+                <Button variant="outline" onClick={loadAppUsers} className="border-gray-600 text-gray-300 hover:bg-gray-700">Load Users</Button>
+                <div className="flex items-center gap-2 text-gray-300">
+                  <Checkbox id="showPw" checked={showPasswords} onCheckedChange={v => setShowPasswords(v === true)} />
+                  <Label htmlFor="showPw" className="cursor-pointer">Show</Label>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 border-t border-gray-700 pt-4">
+              <div>
+                <Label className="text-gray-300">New Username</Label>
+                <Input value={newUser.username} onChange={e => setNewUser(prev => ({ ...prev, username: e.target.value }))} className="bg-gray-700 border-gray-600 text-white" />
+              </div>
+              <div>
+                <Label className="text-gray-300">New Password</Label>
+                <Input type={showPasswords ? 'text' : 'password'} value={newUser.password} onChange={e => setNewUser(prev => ({ ...prev, password: e.target.value }))} className="bg-gray-700 border-gray-600 text-white" />
+              </div>
+              <div>
+                <Label className="text-gray-300">Role</Label>
+                <Select value={newUser.role} onValueChange={v => setNewUser(prev => ({ ...prev, role: v }))}>
+                  <SelectTrigger className="bg-gray-700 border-gray-600 text-white">
+                    <SelectValue placeholder="Select role" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-gray-700 border-gray-600">
+                    <SelectItem value="member" className="text-white">member</SelectItem>
+                    <SelectItem value="admin" className="text-white">admin</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-end">
+                <Button onClick={addAppUser} className="bg-green-600 hover:bg-green-700 w-full">Add User</Button>
+              </div>
+            </div>
+
+            <div className="border-t border-gray-700 pt-4">
+              {appUsersLoading ? (
+                <div className="text-gray-400">Loading app users...</div>
+              ) : appUsers.length === 0 ? (
+                <div className="text-gray-400">No app users loaded. Click Load Users.</div>
+              ) : (
+                <div className="space-y-2">
+                  {appUsers.map(u => (
+                    <div key={u.username} className="flex items-center justify-between p-3 bg-gray-700 rounded">
+                      <div className="text-white">{u.username}</div>
+                      <div className="flex items-center gap-2">
+                        <Select value={u.role} onValueChange={v => updateUserRole(u.username, v)}>
+                          <SelectTrigger className="bg-gray-800 border-gray-600 text-white">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent className="bg-gray-800 border-gray-600">
+                            <SelectItem value="member" className="text-white">member</SelectItem>
+                            <SelectItem value="admin" className="text-white">admin</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Button variant="outline" onClick={() => resetUserPassword(u.username)} className="border-gray-600 text-gray-300 hover:bg-gray-700">Reset Password</Button>
+                        <Button variant="destructive" onClick={() => deleteAppUser(u.username)} className="bg-red-600 hover:bg-red-700">Delete</Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {profiles.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

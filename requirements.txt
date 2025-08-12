@@ -1,3 +1,4 @@
+# Enterprise Server Requirements
 setuptools
 wheel
 fastapi
@@ -12,4 +13,26 @@ python-multipart
 python-jose[cryptography]
 passlib[bcrypt]
 aiofiles
-httpx 
+httpx
+
+# Database
+asyncpg
+psycopg2-binary
+sqlalchemy[asyncio]
+alembic
+
+# Caching & Performance
+redis
+aioredis
+prometheus-client
+structlog
+
+# Production Server
+gunicorn
+supervisor
+nginx
+
+# Security & Monitoring
+python-multipart
+slowapi
+healthcheck 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { useEnhancedApp } from '@/contexts/EnhancedAppContext';
 import { Plus, Server, Trash2, Upload, AlertCircle, CheckCircle, Clock, RefreshCw, Cloud, AlertTriangle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -10,19 +10,22 @@ import { useToast } from '@/hooks/use-toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Checkbox } from '@/components/ui/checkbox';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://139.59.213.238:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 export const ProjectsPage = () => {
   const { projects, addProject, removeProject, bulkRemoveProjects, profiles, setProjects, reloadProjectsAndProfiles } = useEnhancedApp();
   const { toast } = useToast();
   const [showAddForm, setShowAddForm] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [pageSize, setPageSize] = useState(30);
+  const [page, setPage] = useState(1);
   const [formData, setFormData] = useState({
     name: '',
     adminEmail: '',
     apiKey: '',
     serviceAccount: null as File | null,
-    firebaseConfig: null as File | null, // NEW
   });
   const [selectedProfile, setSelectedProfile] = useState<string>(profiles[0]?.id || '');
   const [editingProject, setEditingProject] = useState<any>(null);
@@ -35,31 +38,91 @@ export const ProjectsPage = () => {
   const [showAdminServiceAccountModal, setShowAdminServiceAccountModal] = useState(false);
   const [adminServiceAccountFile, setAdminServiceAccountFile] = useState<File | null>(null);
   const [adminServiceAccountLoading, setAdminServiceAccountLoading] = useState(false);
+  const [showAnalytics, setShowAnalytics] = useState(false);
+
+  // Derived data for scalable rendering
+  const [serverTotal, setServerTotal] = useState<number>(projects.length);
+  const [visibleProjects, setVisibleProjects] = useState(projects);
+
+  // Server-side pagination & search
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
   useEffect(() => {
-    fetch(`${API_BASE_URL}/projects/analytics`)
+    const controller = new AbortController();
+    const params = new URLSearchParams();
+    params.set('limit', String(pageSize));
+    params.set('offset', String((page - 1) * pageSize));
+    if (debouncedSearch.trim()) params.set('search', debouncedSearch.trim());
+    // Use the apiCall function from context to ensure proper headers
+    const currentUsername = localStorage.getItem('app-username') || 'admin';
+    fetch(`${API_BASE_URL}/projects?${params.toString()}`, { 
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-App-Username': currentUsername,
+      }
+    })
       .then(res => res.json())
-      .then(setAnalytics)
-      .catch(() => setAnalytics(null));
-  }, [projects]);
+      .then(data => {
+        if (data && Array.isArray(data.projects)) {
+          setVisibleProjects(data.projects);
+          if (typeof data.total === 'number') setServerTotal(data.total);
+        } else {
+          setVisibleProjects(projects);
+          setServerTotal(projects.length);
+        }
+      })
+      .catch(() => {
+        // fallback to client state if backend search not available
+        const term = debouncedSearch.trim().toLowerCase();
+        const filtered = term
+          ? projects.filter(p =>
+              p.name?.toLowerCase().includes(term) ||
+              p.adminEmail?.toLowerCase().includes(term) ||
+              p.id?.toLowerCase().includes(term)
+            )
+          : projects;
+        setVisibleProjects(filtered.slice((page - 1) * pageSize, (page - 1) * pageSize + pageSize));
+        setServerTotal(filtered.length);
+      });
+    return () => controller.abort();
+  }, [debouncedSearch, page, pageSize, projects]);
+
+  const totalPages = useMemo(() => Math.max(1, Math.ceil(serverTotal / pageSize)), [serverTotal, pageSize]);
 
   useEffect(() => {
-    // Log projects after any update
-    console.log('ProjectsPage: Projects state updated:', projects);
-    console.log('ProjectsPage: Selected projects:', selectedProjects);
-  }, [projects, selectedProjects]);
+    if (!showAnalytics) {
+      setAnalytics(null);
+      return;
+    }
+    let cancelled = false;
+    // Use proper headers for analytics request
+    const currentUsername = localStorage.getItem('app-username') || 'admin';
+    fetch(`${API_BASE_URL}/projects/analytics`, {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-App-Username': currentUsername,
+      }
+    })
+      .then(res => res.json())
+      .then(data => { if (!cancelled) setAnalytics(data); })
+      .catch(() => { if (!cancelled) setAnalytics(null); });
+    return () => { cancelled = true; };
+  }, [showAnalytics, page, pageSize, serverTotal]);
+
+  // Keep selection valid when paging/filtering changes
+  useEffect(() => {
+    const visibleIds = new Set(visibleProjects.map(p => p.id));
+    setSelectedProjects(prev => prev.filter(id => visibleIds.has(id)));
+  }, [page, pageSize, search]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       setFormData({ ...formData, serviceAccount: file });
-    }
-  };
-
-  const handleConfigFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setFormData({ ...formData, firebaseConfig: file });
     }
   };
 
@@ -70,7 +133,6 @@ export const ProjectsPage = () => {
     if (!formData.adminEmail) missingFields.push('Admin Email');
     if (!formData.apiKey) missingFields.push('API Key');
     if (!formData.serviceAccount) missingFields.push('Service Account File');
-    if (!formData.firebaseConfig) missingFields.push('Firebase Config File'); // NEW
     if (!selectedProfile) missingFields.push('Profile');
     if (missingFields.length > 0) {
       console.error('Add Project validation failed:', { ...formData, selectedProfile });
@@ -85,8 +147,6 @@ export const ProjectsPage = () => {
     try {
       const serviceAccountText = await formData.serviceAccount.text();
       const serviceAccount = JSON.parse(serviceAccountText);
-      const firebaseConfigText = await formData.firebaseConfig.text();
-      const firebaseConfig = JSON.parse(firebaseConfigText);
       const projectId = serviceAccount.project_id;
       if (!projectId) {
         throw new Error("Invalid service account file - missing project_id");
@@ -97,10 +157,9 @@ export const ProjectsPage = () => {
         adminEmail: formData.adminEmail,
         apiKey: formData.apiKey,
         serviceAccount,
-        firebaseConfig, // NEW
         profileId: selectedProfile,
       });
-      setFormData({ name: '', adminEmail: '', apiKey: '', serviceAccount: null, firebaseConfig: null });
+      setFormData({ name: '', adminEmail: '', apiKey: '', serviceAccount: null });
       setShowAddForm(false);
       setSelectedProfile(profiles[0]?.id || '');
       toast({
@@ -139,9 +198,14 @@ export const ProjectsPage = () => {
 
   const handleReconnectProject = async (projectId: string) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/projects/${projectId}/reconnect`, {
-        method: 'POST',
-      });
+          const currentUsername = localStorage.getItem('app-username') || 'admin';
+    const response = await fetch(`${API_BASE_URL}/projects/${projectId}/reconnect`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-App-Username': currentUsername,
+      }
+    });
       const result = await response.json();
       if (result.success) {
         toast({
@@ -203,9 +267,13 @@ export const ProjectsPage = () => {
         serviceAccount,
       };
       // Send to backend (assume PUT /projects/{project_id})
+      const currentUsername = localStorage.getItem('app-username') || 'admin';
       const response = await fetch(`${API_BASE_URL}/projects/${editingProject.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-App-Username': currentUsername,
+        },
         body: JSON.stringify(updated),
       });
       const result = await response.json();
@@ -231,7 +299,7 @@ export const ProjectsPage = () => {
 
   const handleSelectAllProjects = (checked: boolean) => {
     if (checked) {
-      setSelectedProjects(projects.map(p => p.id));
+      setSelectedProjects(visibleProjects.map(p => p.id));
     } else {
       setSelectedProjects([]);
     }
@@ -263,8 +331,13 @@ export const ProjectsPage = () => {
     }
 
     try {
+      const currentUsername = localStorage.getItem('app-username') || 'admin';
       const response = await fetch(`${API_BASE_URL}/projects/${projectId}/google-cloud`, {
         method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-App-Username': currentUsername,
+        }
       });
       
       const result = await response.json();
@@ -311,10 +384,12 @@ export const ProjectsPage = () => {
 
     setGoogleCloudDeleteLoading(true);
     try {
+      const currentUsername = localStorage.getItem('app-username') || 'admin';
       const response = await fetch(`${API_BASE_URL}/projects/bulk-delete-google-cloud`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-App-Username': currentUsername,
         },
         body: JSON.stringify({
           projectIds: selectedProjects,
@@ -370,10 +445,12 @@ export const ProjectsPage = () => {
       const serviceAccountText = await adminServiceAccountFile.text();
       const serviceAccount = JSON.parse(serviceAccountText);
 
+      const currentUsername = localStorage.getItem('app-username') || 'admin';
       const response = await fetch(`${API_BASE_URL}/admin/service-account`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-App-Username': currentUsername,
           'Authorization': 'Basic ' + btoa('admin:admin')
         },
         body: JSON.stringify({
@@ -407,14 +484,35 @@ export const ProjectsPage = () => {
 
   return (
     <div className="p-8 space-y-8">
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
         <div>
           <h1 className="text-3xl font-bold text-white mb-2">Firebase Projects</h1>
           <p className="text-gray-400">Manage your Firebase projects for email campaigns</p>
         </div>
-        <div className="flex gap-2 items-center">
+        <div className="flex flex-wrap gap-2 items-center">
+          <Input
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+            placeholder="Search by name, email or ID..."
+            className="bg-gray-800/60 border-gray-700 text-white w-64"
+          />
+          <select
+            value={pageSize}
+            onChange={e => { setPageSize(Number(e.target.value)); setPage(1); }}
+            className="bg-gray-800/60 border border-gray-700 text-white px-2 py-2 rounded"
+            title="Items per page"
+          >
+            <option value={15}>15</option>
+            <option value={30}>30</option>
+            <option value={60}>60</option>
+            <option value={120}>120</option>
+          </select>
+          <label className="flex items-center gap-2 text-gray-300 ml-2">
+            <Checkbox checked={showAnalytics} onCheckedChange={(v) => setShowAnalytics(v === true)} />
+            <span className="text-sm">Show analytics</span>
+          </label>
           <Checkbox
-            checked={selectedProjects.length === projects.length && projects.length > 0}
+            checked={visibleProjects.length > 0 && selectedProjects.length === visibleProjects.length}
             onCheckedChange={handleSelectAllProjects}
             className="border-gray-500"
           />
@@ -454,6 +552,28 @@ export const ProjectsPage = () => {
           >
             <Cloud className="w-4 h-4 mr-2" />
             Admin Service Account
+          </Button>
+          <Button
+            variant="outline"
+            onClick={async () => {
+              try {
+                const currentUsername = localStorage.getItem('app-username') || 'admin';
+                await Promise.all(visibleProjects.map(p => fetch(`${API_BASE_URL}/projects/${p.id}/reconnect`, { 
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'X-App-Username': currentUsername,
+                  }
+                })));
+                toast({ title: 'Reconnect Triggered', description: 'Reconnect initiated for visible projects.' });
+                await reloadProjectsAndProfiles();
+              } catch {
+                toast({ title: 'Reconnect Failed', description: 'Some projects failed to reconnect.', variant: 'destructive' });
+              }
+            }}
+            className="border-blue-600 text-blue-400 hover:bg-blue-900/20"
+          >
+            <RefreshCw className="w-4 h-4 mr-2" /> Reconnect Visible
           </Button>
         </div>
       </div>
@@ -567,33 +687,6 @@ export const ProjectsPage = () => {
                   </p>
                 </div>
 
-                <div>
-                  <Label htmlFor="firebaseConfig" className="text-gray-300">Firebase Config JSON</Label>
-                  <div className="mt-2">
-                    <input
-                      id="firebaseConfig"
-                      type="file"
-                      accept=".json"
-                      onChange={handleConfigFileChange}
-                      className="hidden"
-                      disabled={isSubmitting}
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => document.getElementById('firebaseConfig')?.click()}
-                      className="border-gray-600 text-gray-300 hover:bg-gray-700"
-                      disabled={isSubmitting}
-                    >
-                      <Upload className="w-4 h-4 mr-2" />
-                      {formData.firebaseConfig ? formData.firebaseConfig.name : 'Upload JSON File'}
-                    </Button>
-                  </div>
-                  <p className="text-xs text-gray-400 mt-1">
-                    Download from Firebase Console → Project Settings → General → Your apps → Firebase SDK snippet
-                  </p>
-                </div>
-
                 <div className="flex gap-2">
                   <Button
                     type="submit"
@@ -619,7 +712,7 @@ export const ProjectsPage = () => {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {projects.filter(p => p && typeof p.id === 'string' && p.id.trim() !== '' && p.id !== 'undefined').map((project) => (
+        {visibleProjects.filter(p => p && typeof p.id === 'string' && p.id.trim() !== '' && p.id !== 'undefined').map((project) => (
           <Card key={project.id} className="bg-gray-800 border-gray-700 hover:bg-gray-750 transition-colors">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <div className="flex items-center gap-2">
@@ -709,7 +802,7 @@ export const ProjectsPage = () => {
                     {new Date(project.createdAt).toLocaleDateString()}
                   </p>
                 </div>
-                {analytics && analytics[project.id] && (
+                {showAnalytics && analytics && analytics[project.id] && (
                   <div className="bg-gray-900/40 rounded p-2 mt-2">
                     <div className="text-xs text-blue-300 font-semibold mb-1">Analytics</div>
                     <div className="flex flex-wrap gap-4 text-xs text-gray-300">
@@ -723,6 +816,27 @@ export const ProjectsPage = () => {
             </CardContent>
           </Card>
         ))}
+      </div>
+
+      {/* Pagination */}
+      <div className="flex items-center justify-center gap-4 mt-6">
+        <Button
+          variant="outline"
+          onClick={() => setPage(p => Math.max(1, p - 1))}
+          className="border-gray-600 text-gray-300 hover:bg-gray-700"
+          disabled={page <= 1}
+        >
+          Prev
+        </Button>
+        <span className="text-gray-300 text-sm">Page {page} / {totalPages} • {serverTotal} item(s)</span>
+        <Button
+          variant="outline"
+          onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+          className="border-gray-600 text-gray-300 hover:bg-gray-700"
+          disabled={page >= totalPages}
+        >
+          Next
+        </Button>
       </div>
 
       {projects.length === 0 && !showAddForm && (

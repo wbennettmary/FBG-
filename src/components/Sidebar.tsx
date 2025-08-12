@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   Home, 
   Users, 
@@ -46,17 +46,48 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [newProfileDescription, setNewProfileDescription] = useState('');
   const { logout } = useAuth();
 
-  const menuItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: Home },
-    { id: 'projects', label: 'Projects', icon: FolderOpen },
-    { id: 'users', label: 'Users', icon: Users },
-    { id: 'campaigns', label: 'Campaigns', icon: Mail },
-    { id: 'templates', label: 'Templates', icon: FileText },
-    { id: 'ai', label: 'AI Management', icon: Brain },
-    { id: 'test', label: 'Test Campaign', icon: TestTube },
-    { id: 'profiles', label: 'Profiles', icon: Settings },
-    { id: 'audit-logs', label: 'Audit Logs', icon: FileText },
+  const [, setStorageTick] = useState(0);
+  useEffect(() => {
+    const onStorage = () => setStorageTick(t => t + 1);
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+  const role = typeof window !== 'undefined' ? localStorage.getItem('app-role') || 'user' : 'user';
+  const permsRaw = typeof window !== 'undefined' ? localStorage.getItem('app-permissions') : '{}';
+  const perms = typeof window !== 'undefined' ? (() => { 
+    try { 
+      const parsed = JSON.parse(permsRaw || '{}');
+      console.log('Raw permissions from localStorage:', permsRaw);
+      console.log('Parsed permissions:', parsed);
+      return parsed;
+    } catch (e) { 
+      console.error('Failed to parse permissions:', e, permsRaw);
+      return {}; 
+    }
+  })() : {} as any;
+  
+  const can = (key: string, fallback = false) => {
+    const result = (role === 'admin') || (!!perms && perms[key] === true) || (fallback === true);
+    console.log(`Permission check for ${key}: role=${role}, perms[${key}]=${perms[key]}, result=${result}`);
+    return result;
+  };
+  
+  // Debug logging
+  console.log('Sidebar Debug:', { role, perms, username: localStorage.getItem('app-username') });
+
+  const allItems = [
+    { id: 'dashboard', label: 'Dashboard', icon: Home, key: 'dashboard', show: true },
+    { id: 'projects', label: 'Projects', icon: FolderOpen, key: 'projects', show: can('projects') },
+    { id: 'users', label: 'Users', icon: Users, key: 'users', show: can('users', false) },
+    { id: 'campaigns', label: 'Campaigns', icon: Mail, key: 'campaigns', show: can('campaigns') },
+    { id: 'templates', label: 'Templates', icon: FileText, key: 'templates', show: can('templates', false) },
+    { id: 'ai', label: 'AI Management', icon: Brain, key: 'ai', show: can('ai', false) },
+    { id: 'test', label: 'Test Campaign', icon: TestTube, key: 'test', show: can('test', false) },
+    { id: 'profiles', label: 'Profiles', icon: Settings, key: 'profiles', show: can('profiles', false) },
+    { id: 'audit-logs', label: 'Audit Logs', icon: FileText, key: 'auditLogs', show: can('auditLogs', false) },
+    { id: 'settings', label: 'Settings', icon: Settings, key: 'settings', show: can('settings') },
   ];
+  const menuItems = allItems.filter(i => i.show && (i.id !== 'settings' ? true : role === 'admin'));
 
   const handleAddProfile = () => {
     if (newProfileName.trim()) {
@@ -78,7 +109,39 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <div className="w-64 bg-gray-800 border-r border-gray-700 flex flex-col">
       <div className="p-6 border-b border-gray-700">
-        <h1 className="text-xl font-bold text-white mb-4">Firebase Manager</h1>
+        <h1 className="text-xl font-bold text-white mb-1">Firebase Manager</h1>
+        <div className="flex items-center justify-between">
+          <div className="text-xs text-gray-400">Signed in as <span className="text-gray-200 font-semibold">{(typeof window !== 'undefined' ? localStorage.getItem('app-username') : '') || 'user'}</span></div>
+          <Button 
+            size="sm" 
+            variant="ghost" 
+            onClick={async () => {
+              const username = localStorage.getItem('app-username');
+              if (username) {
+                try {
+                  const res = await fetch(`http://localhost:8000/auth/effective?username=${encodeURIComponent(username)}`);
+                  if (res.ok) {
+                    const data = await res.json();
+                    localStorage.setItem('app-role', data.role || 'user');
+                    const normalized: any = {};
+                    ['projects','users','campaigns','templates','ai','test','profiles','auditLogs','settings','smtp'].forEach(k => {
+                      normalized[k] = !!(data.permissions && data.permissions[k]);
+                    });
+                    localStorage.setItem('app-permissions', JSON.stringify(normalized));
+                    window.dispatchEvent(new Event('storage'));
+                    console.log('Refreshed permissions for', username, ':', normalized);
+                  }
+                } catch (e) {
+                  console.error('Failed to refresh permissions:', e);
+                }
+              }
+            }}
+            className="text-gray-400 hover:text-white p-1 text-xs"
+            title="Refresh Permissions"
+          >
+            🔄
+          </Button>
+        </div>
         
         {/* Profile Selection */}
         <div className="space-y-2">

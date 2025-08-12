@@ -31,7 +31,7 @@ import { useToast } from '@/hooks/use-toast';
 import { EnhancedCampaignMonitor } from './EnhancedCampaignMonitor';
 import { Dialog as ConfirmDialog, DialogContent as ConfirmDialogContent, DialogHeader as ConfirmDialogHeader, DialogTitle as ConfirmDialogTitle } from '@/components/ui/dialog';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://139.59.213.238:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 export const EnhancedCampaignsPage = () => {
   const { 
@@ -349,28 +349,53 @@ export const EnhancedCampaignsPage = () => {
   };
 
   const handleSendCampaign = async (campaign: any, isLightning = false) => {
+    console.log('EnhancedCampaignsPage: handleSendCampaign called');
+    console.log('EnhancedCampaignsPage: campaign =', campaign);
+    console.log('EnhancedCampaignsPage: isLightning =', isLightning);
+    console.log('EnhancedCampaignsPage: API_BASE_URL =', API_BASE_URL);
+    
     try {
       const projects = campaign.projectIds.map((projectId: string) => ({
         projectId,
         userIds: campaign.selectedUsers[projectId] || []
       }));
-      await fetch(`${API_BASE_URL}/campaigns/send`, {
+      
+      const requestBody = {
+        projects,
+        lightning: isLightning,
+        workers: campaign.workers,
+        batchSize: campaign.batchSize,
+        campaignId: campaign.id
+      };
+      
+      console.log('EnhancedCampaignsPage: Request body =', requestBody);
+      console.log('EnhancedCampaignsPage: Making fetch request to:', `${API_BASE_URL}/campaigns/send`);
+      
+      const response = await fetch(`${API_BASE_URL}/campaigns/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          projects,
-          lightning: isLightning,
-          workers: campaign.workers,
-          batchSize: campaign.batchSize,
-          campaignId: campaign.id
-        })
+        body: JSON.stringify(requestBody)
       });
+      
+      console.log('EnhancedCampaignsPage: Response status =', response.status);
+      console.log('EnhancedCampaignsPage: Response ok =', response.ok);
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.log('EnhancedCampaignsPage: Error response text =', errorText);
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
+      }
+      
+      const responseData = await response.json();
+      console.log('EnhancedCampaignsPage: Response data =', responseData);
+      
       toast({
         title: 'Campaign Started',
         description: `Campaign "${campaign.name}" has started${isLightning ? ' in Lightning mode' : ''}.`,
       });
       startPollingCampaigns(); // Start polling after send
     } catch (error) {
+      console.error('EnhancedCampaignsPage: Error in handleSendCampaign:', error);
       toast({
         title: 'Error Starting Campaign',
         description: error.message || 'Failed to start campaign.',

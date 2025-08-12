@@ -20,6 +20,7 @@ export interface Project {
   status: 'loading' | 'active' | 'error';
   createdAt: string;
   profileId?: string;
+  ownerId: string; // Username of the owner
 }
 
 export interface Campaign {
@@ -53,6 +54,7 @@ export interface Profile {
   description: string;
   projectIds: string[];
   createdAt: string;
+  ownerId: string; // Username of the owner
 }
 
 interface EnhancedAppContextType {
@@ -66,6 +68,7 @@ interface EnhancedAppContextType {
   // Users
   users: { [projectId: string]: User[] };
   loadUsers: (projectId: string) => Promise<void>;
+  loadMoreUsers: (projectId: string) => Promise<void>;
   importUsers: (projectIds: string[], emails: string[]) => Promise<number>;
   bulkDeleteUsers: (projectIds: string[], userIds?: string[]) => Promise<void>;
   refreshAllUsers: () => Promise<void>;
@@ -101,7 +104,26 @@ interface EnhancedAppContextType {
 
 const EnhancedAppContext = createContext<EnhancedAppContextType | undefined>(undefined);
 
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://139.59.213.238:8000';
+// Flexible API URL that works with both localhost and server IP
+const getApiBaseUrl = () => {
+  // If environment variable is set, use it
+  if (import.meta.env.VITE_API_BASE_URL) {
+    return import.meta.env.VITE_API_BASE_URL;
+  }
+  
+  // Check if we're running locally or on server
+  const hostname = window.location.hostname;
+  
+  // If localhost or 127.0.0.1, use localhost
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return 'http://localhost:8000';
+  }
+  
+  // Otherwise, use the current hostname with port 8000
+  return `http://${hostname}:8000`;
+};
+
+const API_BASE_URL = getApiBaseUrl();
 
 // Defensive filter for valid projects
 function filterValidProjects(projects: any[]) {
@@ -127,19 +149,34 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
   // API helpers
   const apiCall = async (endpoint: string, options: RequestInit = {}) => {
     try {
-      const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      const url = `${API_BASE_URL}${endpoint}`;
+      console.log(`apiCall: Making request to ${url}`, { method: options.method || 'GET', body: options.body });
+      
+      // Get current username for user ownership
+      const currentUsername = localStorage.getItem('app-username') || 'admin';
+      
+      const response = await fetch(url, {
         headers: {
           'Content-Type': 'application/json',
+          'X-App-Username': currentUsername, // Send current user for backend filtering
           ...options.headers,
         },
         ...options,
       });
+      
+      console.log(`apiCall: Response status for ${endpoint}:`, response.status);
+      
       if (!response.ok) {
-        throw new Error(`API call failed: ${response.status}`);
+        const errorText = await response.text();
+        console.error(`apiCall: HTTP error for ${endpoint}:`, response.status, errorText);
+        throw new Error(`API call failed: ${response.status} - ${errorText}`);
       }
-      return await response.json();
+      
+      const data = await response.json();
+      console.log(`apiCall: Success response for ${endpoint}:`, data);
+      return data;
     } catch (error) {
-      console.error(`API call to ${endpoint} failed:`, error);
+      console.error(`apiCall: Request failed for ${endpoint}:`, error);
       throw error;
     }
   };
@@ -149,48 +186,62 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setLoading(true);
     try {
       console.log('fetchAllData: Starting data fetch...');
-      // 1. Projects
-      const backendProjects = await apiCall('/projects', { method: 'GET' });
-      console.log('fetchAllData: Backend projects:', backendProjects);
-      const filteredProjects = (backendProjects.projects || []).map(p => ({
-        ...p,
-        status: p.status === 'active' ? 'active' : (p.status === 'error' ? 'error' : 'loading'),
-      })).filter(p => p && p.id);
-      console.log('fetchAllData: Filtered projects:', filteredProjects);
-      setProjects(filteredProjects);
       
-      // 2. Users for all projects
-      const usersObj: { [projectId: string]: User[] } = {};
-      await Promise.all(filteredProjects.map(async (project) => {
-        try {
-          const response = await apiCall(`/projects/${project.id}/users`);
-          usersObj[project.id] = response.users;
-        } catch (error) {
-          usersObj[project.id] = [];
-        }
-      }));
-      setUsers(usersObj);
+      // 1. Projects
+      try {
+        const backendProjects = await apiCall('/projects', { method: 'GET' });
+        console.log('fetchAllData: Backend projects:', backendProjects);
+        const filteredProjects = (backendProjects.projects || []).map(p => ({
+          ...p,
+          status: p.status === 'active' ? 'active' : (p.status === 'error' ? 'error' : 'loading'),
+        })).filter(p => p && p.id);
+        console.log('fetchAllData: Filtered projects:', filteredProjects);
+        setProjects(filteredProjects);
+      } catch (error) {
+        console.error('fetchAllData: Failed to load projects:', error);
+        setProjects([]);
+      }
+      
+      // 2. Users (on-demand only)
+      // Do not preload all users on startup to avoid massive payloads for 1K+ projects
+      setUsers({});
       
       // 3. Profiles
-      const backendProfiles = await apiCall('/profiles', { method: 'GET' });
-      const profilesWithDefaults = (backendProfiles.profiles || []).map(profile => ({
-        ...profile,
-        description: profile.description || '',
-      }));
-      setProfiles(profilesWithDefaults);
+      try {
+        const backendProfiles = await apiCall('/profiles', { method: 'GET' });
+        console.log('fetchAllData: Backend profiles:', backendProfiles);
+        const profilesWithDefaults = (backendProfiles.profiles || []).map(profile => ({
+          ...profile,
+          description: profile.description || '',
+        }));
+        setProfiles(profilesWithDefaults);
+      } catch (error) {
+        console.error('fetchAllData: Failed to load profiles:', error);
+        setProfiles([]);
+      }
       
       // 4. Campaigns
-      const responseCampaigns = await apiCall('/campaigns', { method: 'GET' });
-      setCampaigns(responseCampaigns.campaigns || []);
+      try {
+        const responseCampaigns = await apiCall('/campaigns', { method: 'GET' });
+        setCampaigns(responseCampaigns.campaigns || []);
+      } catch (error) {
+        console.error('fetchAllData: Failed to load campaigns:', error);
+        setCampaigns([]);
+      }
       
       // 5. Daily counts
-      const responseDailyCounts = await apiCall('/daily-counts', { method: 'GET' });
-      setDailyCounts(responseDailyCounts.daily_counts || {});
+      try {
+        const responseDailyCounts = await apiCall('/daily-counts', { method: 'GET' });
+        setDailyCounts(responseDailyCounts.daily_counts || {});
+      } catch (error) {
+        console.error('fetchAllData: Failed to load daily counts:', error);
+        setDailyCounts({});
+      }
       
       console.log('fetchAllData: Data fetch completed successfully');
     } catch (error) {
       console.error('fetchAllData: Error:', error);
-      toast({ title: 'Error', description: 'Failed to load data from backend.', variant: 'destructive' });
+      toast({ title: 'Error', description: `Failed to load data from backend: ${error instanceof Error ? error.message : 'Unknown error'}`, variant: 'destructive' });
     } finally {
       setLoading(false);
     }
@@ -276,12 +327,28 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
   };
 
   // CRUD: Users
+  // Paginated loader
+  const projectToNextToken = useRef<{[projectId: string]: string | null}>({});
   const loadUsers = async (projectId: string) => {
     try {
-      const response = await apiCall(`/projects/${projectId}/users`);
+      const response = await apiCall(`/projects/${projectId}/users?limit=500`);
       setUsers(prev => ({ ...prev, [projectId]: response.users }));
+      projectToNextToken.current[projectId] = response.nextPageToken || null;
     } catch (error) {
       console.error(`Failed to load users for project ${projectId}:`, error);
+      throw error;
+    }
+  };
+
+  const loadMoreUsers = async (projectId: string) => {
+    try {
+      const next = projectToNextToken.current[projectId];
+      if (!next) return; // no more pages
+      const response = await apiCall(`/projects/${projectId}/users?limit=500&page_token=${encodeURIComponent(next)}`);
+      setUsers(prev => ({ ...prev, [projectId]: [...(prev[projectId] || []), ...response.users] }));
+      projectToNextToken.current[projectId] = response.nextPageToken || null;
+    } catch (error) {
+      console.error(`Failed to load more users for project ${projectId}:`, error);
       throw error;
     }
   };
@@ -322,20 +389,29 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   // CRUD: Profiles
   const addProfile = async (profileData: Omit<Profile, 'id' | 'createdAt'>) => {
-      setLoading(true);
+    setLoading(true);
     try {
+      console.log('addProfile: Starting profile creation with data:', profileData);
+      
       const profileWithDefaults = {
         ...profileData,
         description: profileData.description || '',
       };
-      await apiCall('/profiles', {
+      
+      console.log('addProfile: Making API call to /profiles with data:', profileWithDefaults);
+      
+      const response = await apiCall('/profiles', {
         method: 'POST',
         body: JSON.stringify(profileWithDefaults),
       });
+      
+      console.log('addProfile: Backend response:', response);
+      
       await fetchAllData();
       toast({ title: 'Profile Added', description: `${profileData.name} added successfully.` });
     } catch (error) {
-      toast({ title: 'Error', description: 'Failed to add profile.', variant: 'destructive' });
+      console.error('addProfile: Error creating profile:', error);
+      toast({ title: 'Error', description: `Failed to add profile: ${error instanceof Error ? error.message : 'Unknown error'}`, variant: 'destructive' });
     } finally {
       setLoading(false);
     }
@@ -610,19 +686,19 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
     if (validProjects.length > 0) {
       // loadAllUsers(); // This function is no longer needed as users are loaded directly
     }
-  }, [projects]); // Use projects array instead of projects.length to avoid unnecessary re-renders
+  }, [projects.length]);
 
   // On app load, fetch profiles from backend
   useEffect(() => {
     (async () => {
-      try {
-        const backendProfiles = await apiCall('/profiles', { method: 'GET' });
-        setProfiles(backendProfiles.profiles || []);
-      } catch (error) {
-        console.error('Failed to load profiles:', error);
-      }
+      const backendProfiles = await apiCall('/profiles', { method: 'GET' });
+      setProfiles(backendProfiles.profiles || []);
+      // Optionally, sync to localStorage
+      // const data = localStorageService.loadData();
+      // data.profiles = backendProfiles;
+      // localStorageService.saveData(data);
     })();
-  }, []); // Empty dependency array - this should only run once
+  }, []);
 
   // Expose a refreshAllUsers function for Users page
   const refreshAllUsers = async () => {
@@ -630,47 +706,97 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
   };
 
   useEffect(() => {
-    const ws = new WebSocket(`ws://${API_BASE_URL.replace('http://', '').replace('https://', '')}/ws`);
-    ws.onmessage = async (event) => {
+    let ws: WebSocket | null = null;
+    let retryAttempts = 0;
+    let heartbeat: number | null = null;
+
+    const getWsUrl = () => {
+      try {
+        const api = new URL(API_BASE_URL);
+        const wsProtocol = api.protocol === 'https:' ? 'wss:' : 'ws:';
+        return `${wsProtocol}//${api.host}/ws`;
+      } catch {
+        const isHttps = window.location.protocol === 'https:';
+        const host = API_BASE_URL.replace('http://', '').replace('https://', '');
+        return `${isHttps ? 'wss' : 'ws'}://${host}/ws`;
+      }
+    };
+
+    const connect = () => {
+      const url = getWsUrl();
+      ws = new WebSocket(url);
+
+      ws.onopen = () => {
+        retryAttempts = 0;
+        if (heartbeat) window.clearInterval(heartbeat);
+        heartbeat = window.setInterval(() => {
+          try { ws?.send('ping'); } catch {}
+        }, 30000);
+      };
+
+      ws.onmessage = async (event) => {
       try {
         const msg = JSON.parse(event.data);
         if (!msg.event) return;
         switch (msg.event) {
+            case 'permissions_updated':
+            case 'roles_updated': {
+              const username = localStorage.getItem('app-username') || '';
+              if (username) {
+                try {
+                  const res = await fetch(`${API_BASE_URL}/auth/effective?username=${encodeURIComponent(username)}`);
+                  if (res.ok) {
+                    const data = await res.json();
+                    localStorage.setItem('app-role', data.role || 'member');
+                    // Always set a complete permissions object with all known keys
+                    const known = ['projects','users','campaigns','templates','ai','test','profiles','auditLogs','settings','smtp'];
+                    const normalized: any = {};
+                    known.forEach(k => { normalized[k] = !!(data.permissions && data.permissions[k]); });
+                    localStorage.setItem('app-permissions', JSON.stringify(normalized));
+                    window.dispatchEvent(new Event('storage'));
+                  }
+                } catch {}
+              }
+              break;
+            }
           case 'import_users':
             toast({
               title: 'Users Imported (Real-Time)',
               description: `Imported ${msg.data.total_imported} users across ${msg.data.project_ids.length} projects.`
             });
-            // Use fetchAllData instead of individual loadUsers calls
-            await fetchAllData();
+            await Promise.all(msg.data.project_ids.map((id: string) => loadUsers(id)));
             break;
           case 'bulk_delete_users':
             toast({
               title: 'Users Deleted (Real-Time)',
               description: `Deleted ${msg.data.total_deleted} users across ${msg.data.project_ids.length} projects.`
             });
-            await fetchAllData();
+            await Promise.all(msg.data.project_ids.map((id: string) => loadUsers(id)));
             break;
           case 'move_users':
             toast({
               title: 'Users Moved (Real-Time)',
               description: `Moved users from ${msg.data.from_project} to ${msg.data.to_project}.`
             });
-            await fetchAllData();
+            await loadUsers(msg.data.from_project);
+            await loadUsers(msg.data.to_project);
             break;
           case 'copy_users':
             toast({
               title: 'Users Copied (Real-Time)',
               description: `Copied users from ${msg.data.from_project} to ${msg.data.to_project}.`
             });
-            await fetchAllData();
+            await loadUsers(msg.data.from_project);
+            await loadUsers(msg.data.to_project);
             break;
           case 'delete_project':
             toast({
               title: 'Project Deleted (Real-Time)',
               description: `Project ${msg.data.project_id} has been deleted.`
             });
-            await fetchAllData();
+            // Reload project list
+            const response = await apiCall('/projects');
+            setProjects(response.projects);
             break;
           default:
             break;
@@ -678,9 +804,28 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
       } catch (e) {
         // Ignore parse errors
       }
+      };
+
+      ws.onclose = () => {
+        if (heartbeat) { window.clearInterval(heartbeat); heartbeat = null; }
+        // Exponential backoff up to 30s
+        const delay = Math.min(30000, 1000 * Math.pow(2, retryAttempts));
+        retryAttempts += 1;
+        setTimeout(connect, delay);
+      };
+
+      ws.onerror = () => {
+        try { ws?.close(); } catch {}
+      };
     };
-    return () => ws.close();
-  }, []); // Empty dependency array - fetchAllData is stable
+
+    connect();
+
+    return () => {
+      if (heartbeat) { window.clearInterval(heartbeat); heartbeat = null; }
+      try { ws?.close(); } catch {}
+    };
+  }, []);
 
   const setProjectsSafe = (projects: Project[]) => {
     const filtered = filterValidProjects(projects);
@@ -703,6 +848,7 @@ export const EnhancedAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
     // Users
     users,
     loadUsers,
+    loadMoreUsers,
     importUsers: async (projectIds: string[], emails: string[]) => {
       setLoading(true);
       try {

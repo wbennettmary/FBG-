@@ -7,6 +7,7 @@ import { EnhancedUsersPage } from '@/components/EnhancedUsersPage';
 import { EnhancedCampaignsPage as CampaignsPage } from '@/components/EnhancedCampaignsPage';
 import { TemplatesPage } from '@/components/TemplatesPage';
 import { ProfileManager } from '@/components/ProfileManager';
+import { AppManagement } from '@/components/AppManagement';
 import { AIManagement } from '@/components/AIManagement';
 import { TestCampaign } from '@/components/TestCampaign';
 import { useEnhancedApp } from '@/contexts/EnhancedAppContext';
@@ -34,22 +35,7 @@ const AppContent = () => {
     }
   }, [profiles, activeProfile, setActiveProfile]);
 
-  // On app load, re-send all projects to backend
-  useEffect(() => {
-    if (projects && projects.length > 0) {
-      projects.forEach(async (project) => {
-        try {
-          await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://139.59.213.238:8000'}/projects`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(project),
-          });
-        } catch (err) {
-          console.error('Failed to re-sync project to backend:', err);
-        }
-      });
-    }
-  }, [projects]);
+  // Removed re-sync of all projects on load to prevent heavy startup load
 
   const renderPage = () => {
     switch (currentPage) {
@@ -71,6 +57,8 @@ const AppContent = () => {
         return <TestCampaign />;
       case 'audit-logs':
         return <AuditLogsPage />;
+      case 'settings':
+        return <AppManagement />;
       default:
         return <EnhancedDashboard />;
     }

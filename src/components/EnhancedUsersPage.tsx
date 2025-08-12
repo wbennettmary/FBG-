@@ -11,7 +11,7 @@ import { useToast } from '@/hooks/use-toast';
 import { UserImportModal } from './UserImportModal';
 import { Label } from '@/components/ui/label';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://139.59.213.238:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 export const EnhancedUsersPage = () => {
   const { 
@@ -20,6 +20,7 @@ export const EnhancedUsersPage = () => {
     profiles, 
     activeProfile, 
     loadUsers, 
+    loadMoreUsers,
     bulkDeleteUsers, 
     loading,
     refreshAllUsers
@@ -27,11 +28,17 @@ export const EnhancedUsersPage = () => {
   const { toast } = useToast();
   
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selectedProject, setSelectedProject] = useState<string>('all');
   const [selectedUsers, setSelectedUsers] = useState<Set<string>>(new Set());
   const [showImportModal, setShowImportModal] = useState(false);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [userLoadError, setUserLoadError] = useState<string>('');
+  // Debounce search
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchTerm), 300);
+    return () => clearTimeout(t);
+  }, [searchTerm]);
   const [clipboard, setClipboard] = useState<{project: string, userIds: string[]} | null>(null);
   const [showPasteModal, setShowPasteModal] = useState(false);
   const [targetProjects, setTargetProjects] = useState<string[]>([]);
@@ -63,26 +70,15 @@ export const EnhancedUsersPage = () => {
     setUserLoadError('');
     
     try {
-      console.log('Loading users for projects:', projectId ? [projectId] : activeProjects.map(p => p.id));
-      
-      if (projectId) {
-        console.log('Loading users for specific project:', projectId);
-        await loadUsers(projectId);
-        console.log('Users loaded for project:', projectId, users[projectId]?.length || 0);
-      } else {
-        // Load users for all active projects
-        console.log('Loading users for all active projects:', activeProjects.length);
-        for (const project of activeProjects) {
-          console.log('Loading users for project:', project.id, project.name);
-          try {
-            await loadUsers(project.id);
-            console.log('Users loaded for project:', project.id, users[project.id]?.length || 0);
-          } catch (error) {
-            console.error('Failed to load users for project:', project.id, error);
-            setUserLoadError(`Failed to load users for project ${project.name}: ${error instanceof Error ? error.message : 'Unknown error'}`);
-          }
+      const targets = projectId ? [projectId] : activeProjects.map(p => p.id);
+      // Load only first page per project to avoid massive loads; users page can fetch more on demand later
+      await Promise.all(targets.map(async (pid) => {
+        try {
+          await loadUsers(pid);
+        } catch (error) {
+          setUserLoadError(`Failed to load users for project ${pid}`);
         }
-      }
+      }));
       
       toast({
         title: "Users Refreshed",
@@ -196,10 +192,10 @@ export const EnhancedUsersPage = () => {
       const projectUsers = users[projectId] || [];
       const project = projects.find(p => p.id === projectId);
       
-      const filteredUsers = projectUsers.filter(user =>
-        user.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        user.displayName?.toLowerCase().includes(searchTerm.toLowerCase())
-      );
+      const filteredUsers = projectUsers.filter(user => {
+        const q = debouncedSearch.toLowerCase();
+        return !q || user.email.toLowerCase().includes(q) || user.displayName?.toLowerCase().includes(q);
+      });
 
       allUsers.push(...filteredUsers.map(user => ({ ...user, projectId, projectName: project?.name })));
     }
@@ -236,17 +232,7 @@ export const EnhancedUsersPage = () => {
 
   const filteredUsers = getFilteredUsers();
 
-  // Auto-load users when component mounts or active projects change
-  useEffect(() => {
-    console.log('EnhancedUsersPage useEffect triggered');
-    console.log('Active projects:', activeProjects.length);
-    console.log('Active profile:', activeProfile);
-    
-    if (activeProjects.length > 0) {
-      console.log('Auto-loading users for active projects');
-      handleRefreshUsers();
-    }
-  }, [activeProfile]); // Only depend on activeProfile to avoid infinite loops
+  // Do not auto-load all users for all projects to avoid heavy loads
 
   useEffect(() => {
     if (activeProjects.length === 1) {
@@ -396,6 +382,16 @@ export const EnhancedUsersPage = () => {
             <RefreshCw className="w-4 h-4 mr-2" />
           )}
           Refresh Users
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => {
+            const targets = selectedProject === 'all' ? activeProjects.map(p => p.id) : [selectedProject];
+            targets.forEach(pid => loadMoreUsers(pid));
+          }}
+          className="border-gray-600 text-gray-300 hover:bg-gray-700"
+        >
+          Load More
         </Button>
         <Button
           variant="destructive"

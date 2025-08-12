@@ -11,7 +11,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import JSON5 from 'json5'; // Add at the top for robust JSON parsing
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://139.59.213.238:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 export const TemplatesPage = () => {
   const { projects, profiles, activeProfile, addProject, reloadProjectsAndProfiles } = useEnhancedApp();
@@ -41,9 +41,6 @@ export const TemplatesPage = () => {
   const [bulkImportLoading, setBulkImportLoading] = useState(false);
   const [bulkImportLog, setBulkImportLog] = useState<string[]>([]);
   
-  // Add state for editing authDomain
-  const [editingAuthDomain, setEditingAuthDomain] = useState<{[projectId: string]: string}>({});
-  const [savingAuthDomain, setSavingAuthDomain] = useState<{[projectId: string]: boolean}>({});
 
 
   // Filter projects by active profile
@@ -131,12 +128,20 @@ export const TemplatesPage = () => {
     if (resetAuthDomain) payload.authDomain = resetAuthDomain;
 
     try {
+      console.log('TemplatesPage: Starting template update');
+      console.log('TemplatesPage: Payload size:', JSON.stringify(payload).length, 'characters');
+      console.log('TemplatesPage: Body length:', resetBody.length, 'characters');
+      console.log('TemplatesPage: API_BASE_URL:', API_BASE_URL);
+      
       // Use bulk endpoint for better performance
       const response = await fetch(`${API_BASE_URL}/api/update-reset-template-bulk`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
+      
+      console.log('TemplatesPage: Response status:', response.status);
+      console.log('TemplatesPage: Response ok:', response.ok);
       
       const data = await response.json();
       
@@ -184,24 +189,9 @@ export const TemplatesPage = () => {
       }
 
     } catch (error) {
-      let errorMessage = 'Failed to update templates. Please try again.';
-      
-      // Try to extract more specific error message
-      if (error instanceof Error) {
-        errorMessage = error.message;
-      } else if (typeof error === 'object' && error !== null) {
-        // Try to get error from response
-        const errorObj = error as any;
-        if (errorObj.response?.data?.detail) {
-          errorMessage = errorObj.response.data.detail;
-        } else if (errorObj.message) {
-          errorMessage = errorObj.message;
-        }
-      }
-      
       toast({ 
         title: 'Error', 
-        description: errorMessage, 
+        description: 'Failed to update templates. Please try again.', 
         variant: 'destructive' 
       });
       console.error('Template update error:', error);
@@ -427,31 +417,6 @@ export const TemplatesPage = () => {
       });
     } finally {
       setBulkImportLoading(false);
-    }
-  };
-
-  const handleAuthDomainChange = (projectId: string, value: string) => {
-    setEditingAuthDomain(prev => ({ ...prev, [projectId]: value }));
-  };
-
-  const handleSaveAuthDomain = async (projectId: string) => {
-    setSavingAuthDomain(prev => ({ ...prev, [projectId]: true }));
-    try {
-      const response = await fetch(`${API_BASE_URL}/projects/${projectId}/auth-domain`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ authDomain: editingAuthDomain[projectId] })
-      });
-      const result = await response.json();
-      if (result.success) {
-        toast({ title: 'Auth Domain Updated', description: `Auth domain updated for project ${projectId}` });
-      } else {
-        toast({ title: 'Update Failed', description: result.error || 'Failed to update auth domain', variant: 'destructive' });
-      }
-    } catch (error) {
-      toast({ title: 'Update Failed', description: error instanceof Error ? error.message : 'Failed to update auth domain', variant: 'destructive' });
-    } finally {
-      setSavingAuthDomain(prev => ({ ...prev, [projectId]: false }));
     }
   };
 
@@ -695,20 +660,6 @@ export const TemplatesPage = () => {
                       {domain.current_auth_domain !== domain.default_domain && (
                         <div className="text-xs text-green-400">Custom auth domain configured</div>
                       )}
-                      
-                      {domain.authorized_domains && domain.authorized_domains.length > 0 && (
-                        <>
-                          <div className="text-xs text-gray-400 mt-2">Firebase Authorized Domains:</div>
-                          <div className="text-xs text-blue-300 font-mono">
-                            {domain.authorized_domains.map((d: string, i: number) => (
-                              <div key={i} className="mb-1">
-                                {d === domain.current_auth_domain ? '✅ ' : '• '}{d}
-                              </div>
-                            ))}
-                          </div>
-                        </>
-                      )}
-                      
                       <div className="text-xs text-gray-400 mt-2">Email Domain:</div>
                       <div className="text-sm text-orange-400 font-mono">{domain.project_id}.firebaseapp.com</div>
                       <div className="text-xs text-gray-400">Configure SMTP in Firebase Console for custom email domains</div>

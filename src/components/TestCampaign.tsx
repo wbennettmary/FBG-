@@ -24,7 +24,7 @@ export const TestCampaign = () => {
 
   const activeProfileName = profiles.find(p => p.id === activeProfile)?.name || 'All Projects';
 
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://139.59.213.238:8000';
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
   const handleProjectToggle = (projectId: string) => {
     setSelectedProjects(prev =>
@@ -41,6 +41,11 @@ export const TestCampaign = () => {
   };
 
   const sendTestEmail = async () => {
+    console.log('TestCampaign: Starting sendTestEmail function');
+    console.log('TestCampaign: API_BASE_URL =', API_BASE_URL);
+    console.log('TestCampaign: testEmail =', testEmail);
+    console.log('TestCampaign: selectedProjects =', selectedProjects);
+    
     if (!testEmail.trim()) {
       toast({
         title: "Email Required",
@@ -68,26 +73,44 @@ export const TestCampaign = () => {
     }
     setIsTesting(true);
     try {
+      // ensure selected projects are reconnected before testing
+      await Promise.all(selectedProjects.map(async (projectId) => {
+        try {
+          await fetch(`${API_BASE_URL}/projects/${projectId}/reconnect`, { method: 'POST' });
+        } catch {}
+      }));
       let allSuccess = true;
       for (const projectId of selectedProjects) {
+        console.log('TestCampaign: Sending test email for project:', projectId);
+        const requestBody = {
+          email: testEmail,
+          project_id: projectId,
+        };
+        console.log('TestCampaign: Request body:', requestBody);
+        
         const response = await fetch(`${API_BASE_URL}/test-reset-email`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            email: testEmail,
-            project_id: projectId,
-          }),
+          body: JSON.stringify(requestBody),
         });
+        
+        console.log('TestCampaign: Response status:', response.status);
+        console.log('TestCampaign: Response ok:', response.ok);
+        
         if (!response.ok) {
           allSuccess = false;
           const result = await response.json();
+          console.log('TestCampaign: Error response:', result);
           toast({
             title: "Test Failed",
             description: result.error || `Failed to send test email for project ${projectId}`,
             variant: "destructive",
           });
+        } else {
+          const result = await response.json();
+          console.log('TestCampaign: Success response:', result);
         }
       }
       if (allSuccess) {

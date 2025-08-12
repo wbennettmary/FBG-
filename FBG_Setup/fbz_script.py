@@ -6,7 +6,7 @@ import glob
 import shutil
 import re
 import pyotp
-from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QSpinBox, QTextEdit, QMessageBox
+from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout, QSpinBox, QTextEdit, QMessageBox, QFileDialog, QComboBox, QGroupBox, QGridLayout
 from PyQt5.QtCore import QThread, pyqtSignal
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium import webdriver
@@ -20,6 +20,56 @@ import logging
 
 ELEMENT_DELAY = 8
 LONG_DELAY = 25
+
+# Modern dark UI styling
+APP_QSS = """
+QWidget {
+  background: #0f1115;
+  color: #e6edf3;
+  font-family: Segoe UI, Inter, Arial;
+  font-size: 12.5pt;
+}
+QGroupBox {
+  border: 1px solid #1f2633;
+  border-radius: 8px;
+  margin-top: 12px;
+  padding: 10px 12px 12px 12px;
+}
+QGroupBox::title {
+  subcontrol-origin: margin;
+  left: 10px;
+  padding: 0 6px;
+  color: #a0b3c6;
+  font-weight: 600;
+}
+QLabel { color: #cbd5e1; }
+QLineEdit, QTextEdit, QSpinBox, QComboBox {
+  background: #0b0d11;
+  border: 1px solid #222a3b;
+  border-radius: 6px;
+  padding: 8px;
+  selection-background-color: #2563eb;
+}
+QLineEdit:focus, QTextEdit:focus, QSpinBox:focus, QComboBox:focus {
+  border: 1px solid #2563eb;
+}
+QPushButton {
+  background: #1e293b;
+  border: 1px solid #2f394a;
+  color: #e6edf3;
+  border-radius: 8px;
+  padding: 8px 14px;
+}
+QPushButton:hover {
+  background: #263445;
+}
+QPushButton#primary {
+  background: #2563eb;
+  border: 1px solid #1e4fd0;
+}
+QPushButton#primary:hover { background: #1f54c9; }
+QTextEdit { min-height: 220px; }
+"""
 
 def advanced_log(driver, msg):
     print(msg)
@@ -682,76 +732,186 @@ class FirebaseWorker(QThread):
 class FirebaseCreatorUI(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Firebase Project Creator")
-        self.setFixedSize(600, 600)
+        self.setWindowTitle("Firebase Project Creator – Single/Bulk")
+        self.setFixedSize(760, 700)
         self.threads = []
+        self.pending_accounts = []
+        self.active_workers = []
         self.init_ui()
 
     def init_ui(self):
         layout = QVBoxLayout()
 
+        # Mode group
+        mode_group = QGroupBox("Run Mode")
+        mode_grid = QGridLayout()
+        self.mode_label = QLabel("Mode")
+        self.mode_select = QComboBox()
+        self.mode_select.addItems(["Single (typing)", "Bulk (CSV file)"])
+        self.mode_select.currentIndexChanged.connect(self.toggle_mode)
+        mode_grid.addWidget(self.mode_label, 0, 0)
+        mode_grid.addWidget(self.mode_select, 0, 1)
+        mode_group.setLayout(mode_grid)
+        layout.addWidget(mode_group)
+
+        # Single inputs group
+        single_group = QGroupBox("Single Account")
+        single_grid = QGridLayout()
         self.email_label = QLabel("Google Email:")
         self.email_input = QLineEdit()
-
         self.password_label = QLabel("Password:")
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.Password)
-
         self.otp_label = QLabel("OTP Secret Key (optional):")
         self.otp_input = QLineEdit()
+        single_grid.addWidget(self.email_label, 0, 0)
+        single_grid.addWidget(self.email_input, 0, 1)
+        single_grid.addWidget(self.password_label, 1, 0)
+        single_grid.addWidget(self.password_input, 1, 1)
+        single_grid.addWidget(self.otp_label, 2, 0)
+        single_grid.addWidget(self.otp_input, 2, 1)
+        single_group.setLayout(single_grid)
+        layout.addWidget(single_group)
+        self.single_group = single_group
 
-        self.org_label = QLabel("Organization ID:")
+        # Bulk inputs group
+        bulk_group = QGroupBox("Bulk Accounts (CSV)")
+        bulk_grid = QGridLayout()
+        self.file_label = QLabel("CSV file")
+        self.file_input = QLineEdit()
+        self.file_browse = QPushButton("Browse…")
+        self.file_browse.clicked.connect(self.browse_file)
+        bulk_grid.addWidget(self.file_label, 0, 0)
+        bulk_grid.addWidget(self.file_input, 0, 1)
+        bulk_grid.addWidget(self.file_browse, 0, 2)
+        bulk_group.setLayout(bulk_grid)
+        layout.addWidget(bulk_group)
+        self.bulk_group = bulk_group
+        self.bulk_group.hide()
+
+        # Configuration group
+        config_group = QGroupBox("Configuration")
+        config_grid = QGridLayout()
+        self.org_label = QLabel("Default Organization ID")
         self.org_input = QLineEdit()
-
-        self.thread_label = QLabel("Number of Threads:")
+        self.thread_label = QLabel("Concurrent Threads")
         self.thread_input = QSpinBox()
         self.thread_input.setRange(1, 10)
         self.thread_input.setValue(1)
+        config_grid.addWidget(self.org_label, 0, 0)
+        config_grid.addWidget(self.org_input, 0, 1)
+        config_grid.addWidget(self.thread_label, 1, 0)
+        config_grid.addWidget(self.thread_input, 1, 1)
+        config_group.setLayout(config_grid)
+        layout.addWidget(config_group)
 
+        # Controls
+        controls = QHBoxLayout()
+        controls.addStretch(1)
+        self.start_btn = QPushButton("Start")
+        self.start_btn.setObjectName("primary")
+        self.start_btn.clicked.connect(self.start_threads)
+        controls.addWidget(self.start_btn)
+        layout.addLayout(controls)
+
+        # Logs group
+        logs_group = QGroupBox("Logs")
+        logs_v = QVBoxLayout()
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
-
-        self.start_btn = QPushButton("Start")
-        self.start_btn.clicked.connect(self.start_threads)
-
-        layout.addWidget(self.email_label)
-        layout.addWidget(self.email_input)
-        layout.addWidget(self.password_label)
-        layout.addWidget(self.password_input)
-        layout.addWidget(self.otp_label)
-        layout.addWidget(self.otp_input)
-        layout.addWidget(self.org_label)
-        layout.addWidget(self.org_input)
-        layout.addWidget(self.thread_label)
-        layout.addWidget(self.thread_input)
-        layout.addWidget(self.start_btn)
-        layout.addWidget(QLabel("Logs:"))
-        layout.addWidget(self.log_box)
+        logs_v.addWidget(self.log_box)
+        logs_group.setLayout(logs_v)
+        layout.addWidget(logs_group)
 
         self.setLayout(layout)
 
     def log(self, message):
         self.log_box.append(message)
 
-    def start_threads(self):
-        email = self.email_input.text().strip()
-        password = self.password_input.text().strip()
-        org_id = self.org_input.text().strip()
-        otp_secret = self.otp_input.text().strip()
-        thread_count = self.thread_input.value()
+    def toggle_mode(self):
+        bulk = self.mode_select.currentIndex() == 1
+        self.single_group.setVisible(not bulk)
+        self.bulk_group.setVisible(bulk)
 
-        if not email or not password or not org_id:
-            QMessageBox.warning(self, "Input Error", "Please fill in all required fields.")
+    def browse_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Select accounts CSV", "", "CSV Files (*.csv);;All Files (*)")
+        if path:
+            self.file_input.setText(path)
+
+    def start_threads(self):
+        default_org = self.org_input.text().strip()
+        max_threads = self.thread_input.value()
+
+        accounts = []
+        if self.mode_select.currentIndex() == 0:
+            # Single
+            email = self.email_input.text().strip()
+            password = self.password_input.text().strip()
+            otp_secret = self.otp_input.text().strip()
+            if not email or not password:
+                QMessageBox.warning(self, "Input Error", "Email and Password are required.")
+                return
+            if not default_org:
+                QMessageBox.warning(self, "Input Error", "Organization ID is required (or provide per-account in CSV).")
+                return
+            accounts.append((email, password, otp_secret, default_org))
+        else:
+            # Bulk CSV
+            path = self.file_input.text().strip()
+            if not path or not os.path.exists(path):
+                QMessageBox.warning(self, "Input Error", "Please select a valid CSV file.")
+                return
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        parts = [p.strip() for p in line.split(",")]
+                        if len(parts) < 2:
+                            continue
+                        email = parts[0]
+                        password = parts[1]
+                        otp_secret = parts[2] if len(parts) >= 3 else ""
+                        org_id = parts[3] if len(parts) >= 4 else default_org
+                        if not org_id:
+                            self.log(f"Skipping {email}: missing organization id")
+                            continue
+                        accounts.append((email, password, otp_secret, org_id))
+            except Exception as e:
+                QMessageBox.critical(self, "Read Error", f"Failed to read accounts file: {e}")
+                return
+
+        if not accounts:
+            QMessageBox.warning(self, "Input Error", "No valid accounts to process.")
             return
 
-        self.log("🚀 Starting Firebase creation threads...")
-        self.threads = []
-        for i in range(thread_count):
-            worker = FirebaseWorker(email, password, org_id, otp_secret, i+1)
+        self.log(f"🚀 Starting {len(accounts)} account(s) with up to {max_threads} concurrent thread(s)...")
+
+        # Reset state
+        self.pending_accounts = accounts
+        self.active_workers = []
+
+        # Launch initial batch
+        self.launch_more_workers(max_threads)
+
+    def launch_more_workers(self, max_threads):
+        while len(self.active_workers) < max_threads and self.pending_accounts:
+            email, password, otp_secret, org_id = self.pending_accounts.pop(0)
+            worker = FirebaseWorker(email, password, org_id, otp_secret, len(self.active_workers) + 1)
             worker.log_signal.connect(self.log)
-            worker.done_signal.connect(self.log)
-            self.threads.append(worker)
+            worker.done_signal.connect(self.on_worker_done)
+            self.active_workers.append(worker)
             worker.start()
+
+    def on_worker_done(self, msg):
+        # Remove finished worker
+        sender = self.sender()
+        if sender in self.active_workers:
+            self.active_workers.remove(sender)
+        self.log(msg)
+        # Launch next if pending
+        self.launch_more_workers(self.thread_input.value())
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

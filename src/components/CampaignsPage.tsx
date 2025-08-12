@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Label } from '@/components/ui/label';
 import { Pagination } from '@/components/ui/pagination';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://139.59.213.238:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 export const CampaignsPage = () => {
   const {
@@ -200,11 +200,21 @@ export const CampaignsPage = () => {
   });
   const totalPages = Math.ceil(sortedCampaigns.length / campaignsPerPage);
   const paginatedCampaigns = sortedCampaigns.slice((currentPage - 1) * campaignsPerPage, currentPage * campaignsPerPage);
+  
+  // Debug campaigns data
+  console.log('CampaignsPage: All campaigns:', campaigns);
+  console.log('CampaignsPage: Sorted campaigns:', sortedCampaigns);
+  console.log('CampaignsPage: Paginated campaigns:', paginatedCampaigns);
 
   // Send campaign (parallel, all projects at once) - FIXED VERSION
   const handleSendCampaign = async (campaign: any) => {
+    console.log('CampaignsPage: Starting handleSendCampaign');
+    console.log('CampaignsPage: campaign =', campaign);
+    console.log('CampaignsPage: API_BASE_URL =', API_BASE_URL);
+    
     // Prevent multiple simultaneous sends
     if (sendingCampaignId || isSendingRef.current[campaign.id]) {
+      console.log('CampaignsPage: Campaign already sending, returning');
       return;
     }
     
@@ -213,28 +223,38 @@ export const CampaignsPage = () => {
     setCampaignProgress(prev => ({ ...prev, [campaign.id]: {} }));
     
     const { projectIds, selectedUsers } = campaign;
+    console.log('CampaignsPage: projectIds =', projectIds);
+    console.log('CampaignsPage: selectedUsers =', selectedUsers);
     
     try {
       await Promise.allSettled(
         projectIds.map(async (projectId: string) => {
+          console.log('CampaignsPage: Processing project:', projectId);
           setCampaignProgress(prev => ({
             ...prev,
             [campaign.id]: { ...prev[campaign.id], [projectId]: 'Sending...' }
           }));
           
           try {
+            const requestBody = {
+              projectId,
+              userIds: selectedUsers[projectId] || [],
+              lightning: true,
+              campaignId: campaign.id
+            };
+            console.log('CampaignsPage: Request body for project', projectId, ':', requestBody);
+            
             const res = await fetch(`${API_BASE_URL}/campaigns/send`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                projectId,
-                userIds: selectedUsers[projectId] || [],
-                lightning: true,
-                campaignId: campaign.id
-              })
+              body: JSON.stringify(requestBody)
             });
             
+            console.log('CampaignsPage: Response status for project', projectId, ':', res.status);
+            console.log('CampaignsPage: Response ok for project', projectId, ':', res.ok);
+            
             const data = await res.json();
+            console.log('CampaignsPage: Response data for project', projectId, ':', data);
             
             setCampaignProgress(prev => ({
               ...prev,
@@ -244,6 +264,7 @@ export const CampaignsPage = () => {
               }
             }));
           } catch (e) {
+            console.log('CampaignsPage: Error for project', projectId, ':', e);
             setCampaignProgress(prev => ({
               ...prev,
               [campaign.id]: { 
@@ -462,7 +483,18 @@ export const CampaignsPage = () => {
                       <Button size="sm" variant="outline" onClick={() => handleEditCampaign(campaign)}><Edit2 className="w-4 h-4" /></Button>
                       <Button size="sm" variant="outline" onClick={() => handleDuplicateCampaign(campaign)}><Copy className="w-4 h-4" /></Button>
                       <Button size="sm" variant="destructive" onClick={() => handleDeleteCampaign(campaign.id)}><Trash2 className="w-4 h-4" /></Button>
-                      <Button size="sm" className="bg-gradient-to-r from-yellow-400 to-yellow-600 text-black font-bold" onClick={() => handleSendCampaign(campaign)} disabled={sendingCampaignId === campaign.id || isSendingRef.current[campaign.id]}>
+                      <Button 
+                        size="sm" 
+                        className="bg-gradient-to-r from-yellow-400 to-yellow-600 text-black font-bold" 
+                        onClick={() => {
+                          console.log('CampaignsPage: Send button clicked for campaign:', campaign);
+                          console.log('CampaignsPage: Campaign data:', campaign);
+                          console.log('CampaignsPage: sendingCampaignId:', sendingCampaignId);
+                          console.log('CampaignsPage: isSendingRef.current:', isSendingRef.current);
+                          handleSendCampaign(campaign);
+                        }} 
+                        disabled={sendingCampaignId === campaign.id || isSendingRef.current[campaign.id]}
+                      >
                         {sendingCampaignId === campaign.id ? 'Sending...' : 'Send'}
                       </Button>
                     </div>

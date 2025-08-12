@@ -91,7 +91,26 @@ export const useAuth = () => {
 };
 
 // Backend API base URL - supports both local and server deployment
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://139.59.213.238:8000';
+// Flexible API URL that works with both localhost and server IP
+const getApiBaseUrl = () => {
+  // If environment variable is set, use it
+  if (import.meta.env.VITE_API_BASE_URL) {
+    return import.meta.env.VITE_API_BASE_URL;
+  }
+  
+  // Check if we're running locally or on server
+  const hostname = window.location.hostname;
+  
+  // If localhost or 127.0.0.1, use localhost
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return 'http://localhost:8000';
+  }
+  
+  // Otherwise, use the current hostname with port 8000
+  return `http://${hostname}:8000`;
+};
+
+const API_BASE_URL = getApiBaseUrl();
 
 // Enhanced API helper functions
 const apiCall = async (endpoint: string, options: RequestInit = {}) => {
@@ -99,9 +118,13 @@ const apiCall = async (endpoint: string, options: RequestInit = {}) => {
   console.log(`🔄 API Call: ${options.method || 'GET'} ${url}`);
   
   try {
+    // Get current username for user ownership
+    const currentUsername = localStorage.getItem('app-username') || 'admin';
+    
     const response = await fetch(url, {
       headers: {
         'Content-Type': 'application/json',
+        'X-App-Username': currentUsername, // Send current user for backend filtering
         ...options.headers,
       },
       ...options,
@@ -475,36 +498,34 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 };
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
-  // Instead of using state, always read from localStorage for bulletproof persistence
-  const authenticated = localStorage.getItem('authenticated') === 'true';
+  const [authenticated, setAuthenticated] = React.useState<boolean>(() => {
+    return localStorage.getItem('authenticated') === 'true';
+  });
 
   const login = () => {
     localStorage.setItem('authenticated', 'true');
-    // No need to set state, will re-render on next render
-    console.log('[AuthProvider] login: set localStorage["authenticated"] = true');
-    window.dispatchEvent(new Event('storage')); // force update
+    setAuthenticated(true);
+    console.log('[AuthProvider] login: set authenticated = true');
   };
 
   const logout = () => {
     localStorage.removeItem('authenticated');
-    // No need to set state, will re-render on next render
-    console.log('[AuthProvider] logout: removed localStorage["authenticated"]');
-    window.dispatchEvent(new Event('storage'));
+    setAuthenticated(false);
+    console.log('[AuthProvider] logout: set authenticated = false');
   };
 
   // Listen for storage changes (in case of multi-tab or programmatic changes)
   React.useEffect(() => {
     const handleStorage = () => {
-      // Force re-render by updating a dummy state
-      setDummy(s => !s);
+      const newAuthState = localStorage.getItem('authenticated') === 'true';
+      setAuthenticated(newAuthState);
     };
     window.addEventListener('storage', handleStorage);
     return () => window.removeEventListener('storage', handleStorage);
   }, []);
-  const [, setDummy] = React.useState(false);
 
   React.useEffect(() => {
-    console.log('[AuthProvider] render: localStorage["authenticated"] =', localStorage.getItem('authenticated'), '| authenticated =', authenticated);
+    console.log('[AuthProvider] render: authenticated =', authenticated);
   });
 
   return (

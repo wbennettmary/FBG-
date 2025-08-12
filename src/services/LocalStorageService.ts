@@ -4,6 +4,7 @@ export interface Profile {
   description?: string;
   createdAt: string;
   projectIds: string[];
+  ownerId: string; // Username of the owner
 }
 
 export interface StoredProject {
@@ -15,6 +16,7 @@ export interface StoredProject {
   status: 'loading' | 'active' | 'error';
   createdAt: string;
   profileId?: string;
+  ownerId: string; // Username of the owner
 }
 
 export interface LocalData {

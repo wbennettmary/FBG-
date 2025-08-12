@@ -3,7 +3,7 @@ Enhanced FastAPI Backend Service for Firebase Operations with Multi-Project Para
 Run this with: python src/utils/firebaseBackend.py
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Body, WebSocket, WebSocketDisconnect, Depends, Path
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Body, WebSocket, WebSocketDisconnect, Depends, Path, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional, Set
@@ -43,28 +43,21 @@ from fastapi import Response
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def safe_initialize_firebase_app(project_id: str, service_account_data: dict):
-    """Safely initialize a Firebase app, checking if it already exists first"""
-    try:
-        cred = credentials.Certificate(service_account_data)
-        # Check if app already exists before initializing
-        try:
-            firebase_app = firebase_admin.get_app(project_id)
-            logger.info(f"Firebase app {project_id} already exists, reusing it")
-            return firebase_app
-        except ValueError:
-            firebase_app = firebase_admin.initialize_app(cred, name=project_id)
-            logger.info(f"Initialized new Firebase app {project_id}")
-            return firebase_app
-    except Exception as e:
-        logger.error(f"Failed to initialize Firebase Admin SDK for {project_id}: {e}")
-        raise e
-
 # Log Google Cloud availability
 if not GOOGLE_CLOUD_AVAILABLE:
     logger.warning("Google Cloud libraries not available. Project deletion from Google Cloud will not work.")
 
 app = FastAPI(title="Firebase Email Campaign Backend", version="2.0.0")
+
+# Configure request size limits for large HTML templates
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+    max_age=3600,
+)
 
 # Enable CORS
 app.add_middleware(
@@ -74,21 +67,6 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
-
-# Increase request size limits for large templates
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request as StarletteRequest
-from starlette.responses import Response
-
-class LargeRequestMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: StarletteRequest, call_next):
-        # Increase max request size to 50MB for large templates
-        if request.method == "POST" and any(path in request.url.path for path in ["/api/update-reset-template", "/api/update-reset-template-bulk"]):
-            # Set a larger limit for template updates
-            request.scope["client_max_size"] = 50 * 1024 * 1024  # 50MB
-        return await call_next(request)
-
-app.add_middleware(LargeRequestMiddleware)
 
 # Global storage
 firebase_apps = {}
@@ -108,6 +86,10 @@ AI_KEYS_FILE = 'ai_keys.json'
 ai_keys = {}
 AI_NEGATIVE_PROMPT_FILE = 'ai_negative_prompt.txt'
 PROFILES_FILE = 'profiles.json'
+ROLE_PERMISSIONS_FILE = 'role_permissions.json'
+SMTP_SETTINGS_FILE = 'smtp_settings.json'
+PASSWORD_RESET_TOKENS_FILE = 'password_reset_tokens.json'
+APP_USERS_FILE = 'app_users.json'
 
 # Admin service account for Google Cloud operations
 ADMIN_SERVICE_ACCOUNT_FILE = 'admin_service_account.json'
@@ -133,6 +115,137 @@ class ConnectionManager:
                 self.disconnect(connection)
 
 ws_manager = ConnectionManager()
+
+# Basic admin security for privileged endpoints (local-only)
+security = HTTPBasic()
+
+def verify_basic_admin(credentials: HTTPBasicCredentials = Depends(security)) -> None:
+    correct_username = secrets.compare_digest(credentials.username, "admin")
+    correct_password = secrets.compare_digest(credentials.password, "admin")
+    if not (correct_username and correct_password):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+# App users store (for login and team management)
+def _hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode('utf-8')).hexdigest()
+
+# Define available features
+DEFAULT_FEATURES = ['projects','users','campaigns','templates','ai','test','profiles','auditLogs','settings','smtp']
+
+def compute_effective_permissions(username: str) -> Dict[str, bool]:
+    """Compute effective permissions for a user based on role and overrides"""
+    users = load_app_users()
+    user = next((u for u in users.get('users', []) if u.get('username') == username), None)
+    if not user:
+        return { feature: False for feature in DEFAULT_FEATURES }
+    
+    role = user.get('role', 'user')
+    # Admin: full access; others: deny-by-default so only overrides apply
+    if role == 'admin':
+        base = { feature: True for feature in DEFAULT_FEATURES }
+    else:
+        base = { feature: False for feature in DEFAULT_FEATURES }
+    
+    overrides = user.get('overrides', {}) or {}
+    effective = { **{ feature: False for feature in DEFAULT_FEATURES }, **base }
+    for k, v in overrides.items():
+        if k in DEFAULT_FEATURES:
+            effective[k] = bool(v)
+    return effective
+
+def load_app_users() -> Dict[str, Dict[str, str]]:
+    # Structure: { "users": [{"username":"admin","password_hash":"...","role":"admin"}, ...] }
+    if not os.path.exists(APP_USERS_FILE):
+        # Initialize with default admin matching current local setup
+        default = {
+            "users": [
+                {"username": "admin", "password_hash": _hash_password("Batata010..++"), "role": "admin"}
+            ]
+        }
+        with open(APP_USERS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(default, f, indent=2)
+        return default
+    try:
+        with open(APP_USERS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {"users": []}
+
+def save_app_users(data: Dict[str, Any]) -> None:
+    try:
+        with open(APP_USERS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to save app users: {e}")
+
+# Role permissions management
+DEFAULT_FEATURES = [
+    'projects','users','campaigns','templates','ai','test','profiles','auditLogs','settings','smtp'
+]
+
+def load_role_permissions() -> Dict[str, Dict[str, bool]]:
+    if not os.path.exists(ROLE_PERMISSIONS_FILE):
+        default = {
+            'admin': { feature: True for feature in DEFAULT_FEATURES },
+            'it': { feature: False for feature in DEFAULT_FEATURES },
+            'user': { feature: False for feature in DEFAULT_FEATURES }
+        }
+        with open(ROLE_PERMISSIONS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(default, f, indent=2)
+        return default
+    try:
+        with open(ROLE_PERMISSIONS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_role_permissions(perms: Dict[str, Dict[str, bool]]) -> None:
+    with open(ROLE_PERMISSIONS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(perms, f, indent=2)
+
+def compute_effective_permissions(username: str) -> Dict[str, bool]:
+    users = load_app_users()
+    roles = load_role_permissions()
+    user = next((u for u in users.get('users', []) if u.get('username') == username), None)
+    if not user:
+        return { feature: False for feature in DEFAULT_FEATURES }
+    role = user.get('role', 'user')
+    # Admin: full access; others: deny-by-default so only overrides apply
+    if role == 'admin':
+        base = { feature: True for feature in DEFAULT_FEATURES }
+    else:
+        base = { feature: False for feature in DEFAULT_FEATURES }
+    overrides = user.get('overrides', {}) or {}
+    effective = { **{ feature: False for feature in DEFAULT_FEATURES }, **base }
+    for k, v in overrides.items():
+        effective[k] = bool(v)
+    return effective
+
+# SMTP settings and password reset tokens
+def load_smtp_settings() -> Dict[str, Any]:
+    if not os.path.exists(SMTP_SETTINGS_FILE):
+        default = {"host": "","port": 587,"username": "","password": "","from": "","use_tls": True}
+        with open(SMTP_SETTINGS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(default, f, indent=2)
+        return default
+    with open(SMTP_SETTINGS_FILE, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+def save_smtp_settings(data: Dict[str, Any]) -> None:
+    with open(SMTP_SETTINGS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2)
+
+def load_reset_tokens() -> Dict[str, Any]:
+    if not os.path.exists(PASSWORD_RESET_TOKENS_FILE):
+        with open(PASSWORD_RESET_TOKENS_FILE, 'w', encoding='utf-8') as f:
+            json.dump({}, f)
+        return {}
+    with open(PASSWORD_RESET_TOKENS_FILE, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+def save_reset_tokens(data: Dict[str, Any]) -> None:
+    with open(PASSWORD_RESET_TOKENS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2)
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -160,6 +273,294 @@ def write_audit_log(user, action, details):
     except Exception as e:
         print(f"Failed to write audit log: {e}")
 
+# --- App User Management Endpoints ---
+
+class AppUserCreate(BaseModel):
+    username: str
+    password: str
+    role: str = "member"  # admin|member
+    overrides: Optional[Dict[str, bool]] = None
+
+class AppUserUpdate(BaseModel):
+    password: Optional[str] = None
+    role: Optional[str] = None
+    overrides: Optional[Dict[str, bool]] = None
+
+@app.post("/auth/login")
+def auth_login(body: Dict[str, str] = Body(...)):
+    data = load_app_users()
+    username = (body.get('username') or '').strip()
+    password = body.get('password') or ''
+    user = next((u for u in data.get('users', []) if u.get('username') == username), None)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if user.get('password_hash') != _hash_password(password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    perms = compute_effective_permissions(username)
+    return {"success": True, "username": username, "role": user.get('role', 'member'), "permissions": perms}
+
+@app.get("/app-users")
+def list_app_users(_: None = Depends(verify_basic_admin)):
+    data = load_app_users()
+    # Do not return password hashes
+    return {"users": [{"username": u.get('username'), "role": u.get('role', 'member'), "overrides": u.get('overrides', {}), "email": u.get('email', '')} for u in data.get('users', [])]}
+
+@app.post("/app-users")
+def create_app_user(user: dict, _: None = Depends(verify_basic_admin)):
+    data = load_app_users()
+    if any(u.get('username') == user.get('username') for u in data.get('users', [])):
+        raise HTTPException(status_code=400, detail="Username already exists")
+    # Always initialize overrides field to prevent missing permissions
+    clean_overrides = {}
+    user_overrides = user.get('overrides', {}) or {}
+    if user_overrides:
+        # Only accept known features
+        for k, v in user_overrides.items():
+            if k in DEFAULT_FEATURES:
+                clean_overrides[k] = bool(v)
+    
+    entry = {
+        "username": user.get('username'), 
+        "password_hash": _hash_password(user.get('password', '')), 
+        "role": user.get('role', 'user'),
+        "overrides": clean_overrides,
+        "email": user.get('email', '')  # Add email field
+    }
+    data['users'].append(entry)
+    save_app_users(data)
+    return {"success": True}
+
+@app.put("/app-users/{username}")
+def update_app_user(username: str, update: dict, _: None = Depends(verify_basic_admin)):
+    data = load_app_users()
+    found = False
+    for u in data.get('users', []):
+        if u.get('username') == username:
+            if update.get('password') is not None:
+                u['password_hash'] = _hash_password(update.get('password'))
+            if update.get('role') is not None:
+                u['role'] = update.get('role')
+            if update.get('overrides') is not None and isinstance(update.get('overrides'), dict):
+                # Merge overrides instead of replacing completely, only accept known features
+                existing_overrides = u.get('overrides', {}) or {}
+                for k, v in update.get('overrides', {}).items():
+                    if k in DEFAULT_FEATURES:
+                        existing_overrides[k] = bool(v)
+                u['overrides'] = existing_overrides
+            # Update email if provided
+            if update.get('email') is not None:
+                u['email'] = update.get('email', '')
+            # Ensure overrides field exists for all users
+            if 'overrides' not in u:
+                u['overrides'] = {}
+            # Ensure email field exists
+            if 'email' not in u:
+                u['email'] = ''
+            found = True
+            break
+    if not found:
+        raise HTTPException(status_code=404, detail="User not found")
+    save_app_users(data)
+    # Broadcast permission update to connected clients
+    try:
+        asyncio.create_task(ws_manager.broadcast({"event": "permissions_updated", "data": {"username": username}}))
+    except Exception:
+        pass
+    return {"success": True}
+
+# Role permissions endpoints
+@app.get("/role-permissions")
+def get_role_permissions(_: None = Depends(verify_basic_admin)):
+    return load_role_permissions()
+
+@app.put("/role-permissions")
+def put_role_permissions(perms: Dict[str, Dict[str, bool]], _: None = Depends(verify_basic_admin)):
+    # Basic validation
+    for role, feats in perms.items():
+        for k, v in feats.items():
+            if k not in DEFAULT_FEATURES:
+                raise HTTPException(status_code=400, detail=f"Unknown feature: {k}")
+            feats[k] = bool(v)
+    save_role_permissions(perms)
+    try:
+        asyncio.create_task(ws_manager.broadcast({"event": "roles_updated", "data": {}}))
+    except Exception:
+        pass
+    return {"success": True}
+
+# SMTP settings endpoints
+@app.get("/settings/smtp")
+def get_smtp_settings(_: None = Depends(verify_basic_admin)):
+    return load_smtp_settings()
+
+@app.put("/settings/smtp")
+def put_smtp_settings(data: Dict[str, Any], _: None = Depends(verify_basic_admin)):
+    save_smtp_settings(data)
+    return {"success": True}
+
+@app.get("/auth/effective")
+def get_effective_permissions(username: str = Query(..., description="Username to get permissions for")):
+    """Return effective role and permissions for a given username."""
+    users = load_app_users()
+    user = next((u for u in users.get('users', []) if u.get('username') == username), None)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    perms = compute_effective_permissions(username)
+    return {"username": username, "role": user.get('role', 'user'), "permissions": perms}
+
+@app.delete("/app-users/{username}")
+def delete_app_user(username: str, _: None = Depends(verify_basic_admin)):
+    data = load_app_users()
+    before = len(data.get('users', []))
+    data['users'] = [u for u in data.get('users', []) if u.get('username') != username]
+    if len(data['users']) == before:
+        raise HTTPException(status_code=404, detail="User not found")
+    save_app_users(data)
+    return {"success": True}
+
+@app.post("/app-users/migrate")
+def migrate_app_users(_: None = Depends(verify_basic_admin)):
+    """Ensure all users have an overrides field"""
+    data = load_app_users()
+    migrated = 0
+    for u in data.get('users', []):
+        if 'overrides' not in u:
+            u['overrides'] = {}
+            migrated += 1
+    if migrated > 0:
+        save_app_users(data)
+    return {"success": True, "migrated": migrated}
+
+@app.post("/auth/forgot-password")
+def forgot_password(request: dict):
+    """Send password reset email via SMTP"""
+    username_or_email = request.get('username', '').strip()
+    if not username_or_email:
+        raise HTTPException(status_code=400, detail="Username or email is required")
+    
+    # Check if user exists by username OR email
+    users = load_app_users()
+    user = None
+    
+    # First try to find by username
+    user = next((u for u in users.get('users', []) if u.get('username') == username_or_email), None)
+    
+    # If not found by username, try by email
+    if not user:
+        user = next((u for u in users.get('users', []) if u.get('email') == username_or_email), None)
+    
+    if not user:
+        # Don't reveal if user exists or not for security
+        return {"success": True, "message": "If the username or email exists, a reset email has been sent."}
+    
+    # Generate reset token (simple implementation)
+    import secrets
+    reset_token = secrets.token_urlsafe(32)
+    
+    # Store reset token with expiration (24 hours)
+    from datetime import datetime, timedelta
+    expiry = (datetime.now() + timedelta(hours=24)).isoformat()
+    
+    # Save reset token to user record
+    user['reset_token'] = reset_token
+    user['reset_token_expiry'] = expiry
+    save_app_users(users)
+    
+    # Send email via SMTP
+    try:
+        smtp_settings = load_smtp_settings()
+        if not smtp_settings.get('host'):
+            raise HTTPException(status_code=500, detail="SMTP not configured")
+        
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+        
+        # Create reset URL (assuming frontend runs on same host)
+        reset_url = f"http://localhost:8080/reset-password?token={reset_token}&username={user.get('username')}"
+        
+        # Create email
+        msg = MIMEMultipart()
+        msg['From'] = smtp_settings.get('from', smtp_settings.get('username'))
+        
+        # Use user's email if available, otherwise use the input (which might be email)
+        recipient_email = user.get('email') or username_or_email
+        msg['To'] = recipient_email
+        msg['Subject'] = "Password Reset Request"
+        
+        body = f"""
+        Hello {user.get('username')},
+        
+        You requested a password reset for your Firebase Manager account.
+        
+        Click the link below to reset your password:
+        {reset_url}
+        
+        This link will expire in 24 hours.
+        
+        If you didn't request this reset, please ignore this email.
+        
+        Best regards,
+        Firebase Manager Team
+        """
+        
+        msg.attach(MIMEText(body, 'plain'))
+        
+        # Send email
+        server = smtplib.SMTP(smtp_settings['host'], smtp_settings.get('port', 587))
+        if smtp_settings.get('use_tls', True):
+            server.starttls()
+        if smtp_settings.get('username') and smtp_settings.get('password'):
+            server.login(smtp_settings['username'], smtp_settings['password'])
+        server.send_message(msg)
+        server.quit()
+        
+        logger.info(f"Password reset email sent to {user.get('username')}")
+        return {"success": True, "message": "Password reset email sent successfully."}
+        
+    except Exception as e:
+        logger.error(f"Failed to send password reset email: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send password reset email")
+
+@app.post("/auth/reset-password")
+def reset_password(request: dict):
+    """Reset password using token"""
+    username = request.get('username', '').strip()
+    token = request.get('token', '').strip()
+    new_password = request.get('password', '').strip()
+    
+    if not all([username, token, new_password]):
+        raise HTTPException(status_code=400, detail="Username, token, and new password are required")
+    
+    # Find user and validate token
+    users = load_app_users()
+    user = next((u for u in users.get('users', []) if u.get('username') == username), None)
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid reset token")
+    
+    if user.get('reset_token') != token:
+        raise HTTPException(status_code=400, detail="Invalid reset token")
+    
+    # Check token expiry
+    from datetime import datetime
+    try:
+        expiry = datetime.fromisoformat(user.get('reset_token_expiry', ''))
+        if datetime.now() > expiry:
+            raise HTTPException(status_code=400, detail="Reset token has expired")
+    except:
+        raise HTTPException(status_code=400, detail="Invalid reset token")
+    
+    # Reset password
+    user['password_hash'] = _hash_password(new_password)
+    # Clear reset token
+    user.pop('reset_token', None)
+    user.pop('reset_token_expiry', None)
+    
+    save_app_users(users)
+    logger.info(f"Password reset successfully for user: {username}")
+    
+    return {"success": True, "message": "Password reset successfully"}
+
 def save_projects_to_file():
     try:
         with open(PROJECTS_FILE, 'w') as f:
@@ -169,33 +570,43 @@ def save_projects_to_file():
 
 def load_projects_from_file():
     global projects
+    logger.info(f"load_projects_from_file called. Current projects count: {len(projects) if projects else 0}")
+    
     if not os.path.exists(PROJECTS_FILE):
+        logger.info("PROJECTS_FILE does not exist, setting projects to empty dict")
         projects = {}
-        return
+        return []
     try:
         with open(PROJECTS_FILE, 'r') as f:
             loaded = json.load(f)
-            projects = {}
-            for project in loaded:
-                project_id = project['serviceAccount'].get('project_id')
-                if project_id:
-                    projects[project_id] = project
-        # --- Auto-reinitialize all projects into firebase_apps on startup ---
-        for project_id, project in projects.items():
-            try:
-                cred = credentials.Certificate(project['serviceAccount'])
-                firebase_app = firebase_admin.initialize_app(cred, name=project_id)
-                firebase_apps[project_id] = firebase_app
-                firebase_config = project.get("firebaseConfig")
-                if not firebase_config:
-                    raise Exception("Missing firebaseConfig for project")
-                pyrebase_app = pyrebase.initialize_app(firebase_config)
-                pyrebase_apps[project_id] = pyrebase_app
-                logger.info(f"Re-initialized project {project_id} from file")
-            except Exception as e:
-                logger.error(f"Failed to re-initialize project from file: {str(e)}")
+            logger.info(f"Loaded {len(loaded)} projects from file")
+            
+            # Only update global projects if it's empty (first load)
+            if not projects:
+                logger.info("Global projects is empty, initializing from file")
+                projects = {}
+                for project in loaded:
+                    project_id = project['serviceAccount'].get('project_id')
+                    if project_id:
+                        projects[project_id] = project
+                logger.info(f"Initialized global projects with {len(projects)} projects")
+                
+                # --- Auto-reinitialize all projects into firebase_apps on startup ---
+                for project_id, project in projects.items():
+                    try:
+                        from firebase_admin import credentials, initialize_app
+                        cred = credentials.Certificate(project['serviceAccount'])
+                        firebase_app = initialize_app(cred, name=project_id)
+                        firebase_apps[project_id] = firebase_app
+                        logger.info(f"Auto-initialized project {project_id} into firebase_apps on startup.")
+                    except Exception as e:
+                        logger.error(f"Failed to auto-initialize project {project_id} on startup: {e}")
+            else:
+                logger.info(f"Global projects already has {len(projects)} projects, skipping reinitialization")
+        return loaded
     except Exception as e:
         logger.error(f"Error loading projects: {str(e)}")
+        return []
 
 def save_campaigns_to_file():
     try:
@@ -276,10 +687,7 @@ class ProjectCreate(BaseModel):
     name: str
     adminEmail: str
     serviceAccount: Dict[str, Any]
-    apiKey: Optional[str] = None
-    firebaseConfig: Optional[Dict[str, Any]] = None  # NEW: full config
-    profileId: Optional[str] = None
-    appId: Optional[str] = None
+    apiKey: str
 
 class UserImport(BaseModel):
     emails: List[str]
@@ -354,15 +762,6 @@ async def health_check():
         "version": "2.0.0"
     }
 
-# Helper to validate firebaseConfig
-REQUIRED_FIREBASE_CONFIG_FIELDS = [
-    "apiKey", "authDomain", "databaseURL", "storageBucket", "projectId", "appId"
-]
-def validate_firebase_config(config):
-    missing = [k for k in REQUIRED_FIREBASE_CONFIG_FIELDS if k not in config or not config[k]]
-    if missing:
-        raise ValueError(f"Missing required firebaseConfig fields: {', '.join(missing)}")
-
 @app.post("/projects")
 async def add_project(project: ProjectCreate, request: Request):
     try:
@@ -371,6 +770,17 @@ async def add_project(project: ProjectCreate, request: Request):
         if not project_id:
             logger.error("Invalid service account - missing project_id")
             raise HTTPException(status_code=400, detail="Invalid service account - missing project_id")
+        
+        # Get profile ID from request body if provided
+        profile_id = None
+        try:
+            body = await request.json()
+            profile_id = body.get('profileId')
+            logger.info(f"Profile ID from request: {profile_id}")
+        except Exception as e:
+            logger.warning(f"Could not parse request body for profileId: {e}")
+            pass
+        
         # Remove existing project if it exists
         if project_id in firebase_apps:
             try:
@@ -380,51 +790,67 @@ async def add_project(project: ProjectCreate, request: Request):
             del firebase_apps[project_id]
         if project_id in pyrebase_apps:
             del pyrebase_apps[project_id]
-        # Validate and use full firebaseConfig
-        firebase_config = project.firebaseConfig or {}
-        if not firebase_config:
-            firebase_config = {
-                "apiKey": project.apiKey,
-                "authDomain": f"{project_id}.firebaseapp.com",
-                "databaseURL": f"https://{project_id}-default-rtdb.firebaseio.com",
-                "storageBucket": f"{project_id}.appspot.com",
-                "projectId": project_id,
-                "appId": project.appId if hasattr(project, 'appId') else None
-            }
-        logger.info(f"firebaseConfig for {project_id}: {firebase_config}")
-        try:
-            validate_firebase_config(firebase_config)
-        except Exception as e:
-            logger.error(f"Invalid firebaseConfig: {e}")
-            raise HTTPException(status_code=400, detail=f"Invalid firebaseConfig: {e}")
+        
         # Initialize Firebase Admin SDK
         try:
-            firebase_app = safe_initialize_firebase_app(project_id, project.serviceAccount)
+            cred = credentials.Certificate(project.serviceAccount)
+            firebase_app = firebase_admin.initialize_app(cred, name=project_id)
             firebase_apps[project_id] = firebase_app
         except Exception as e:
             logger.error(f"Failed to initialize Firebase Admin SDK for {project_id}: {e}")
             raise HTTPException(status_code=400, detail=f"Failed to initialize Firebase Admin SDK: {e}")
+        
         # Initialize Pyrebase
         try:
-            pyrebase_app = pyrebase.initialize_app(firebase_config)
+            # Check if this project already has a custom authDomain saved
+            stored_project = projects.get(project_id, {})
+            auth_domain = stored_project.get('authDomain', f"{project_id}.firebaseapp.com")
+            
+            pyrebase_config = {
+                "apiKey": project.apiKey,
+                "authDomain": auth_domain,
+                "databaseURL": f"https://{project_id}-default-rtdb.firebaseio.com",
+                "storageBucket": f"{project_id}.appspot.com",
+            }
+            pyrebase_app = pyrebase.initialize_app(pyrebase_config)
             pyrebase_apps[project_id] = pyrebase_app
-            logger.info(f"Initialized Pyrebase app {project_id} with config: {firebase_config}")
         except Exception as e:
             logger.error(f"Failed to initialize Pyrebase for {project_id}: {e}")
             raise HTTPException(status_code=400, detail=f"Failed to initialize Pyrebase: {e}")
-        # Store project with full config
+        
+        # Get current user for ownership
+        current_user = get_current_user_from_request(request)
+        
+        # Store project with profile association and ownership
         projects[project_id] = {
             'name': project.name,
             'adminEmail': project.adminEmail,
             'serviceAccount': project.serviceAccount,
             'apiKey': project.apiKey,
-            'firebaseConfig': firebase_config,
-            'profileId': project.profileId
+            'profileId': profile_id,
+            'ownerId': current_user
         }
         save_projects_to_file()
+        
+        # Link project to profile if profile_id provided
+        if profile_id:
+            profiles = load_profiles_from_file()
+            profile_found = False
+            for profile in profiles:
+                if profile['id'] == profile_id:
+                    if project_id not in profile['projectIds']:
+                        profile['projectIds'].append(project_id)
+                    profile_found = True
+                    break
+            if profile_found:
+                save_profiles_to_file(profiles)
+                logger.info(f"Project {project_id} linked to profile {profile_id}")
+            else:
+                logger.warning(f"Profile {profile_id} not found when linking project {project_id}")
+        
         logger.info(f"Project {project_id} added successfully")
         logger.info(f"Current projects in firebase_apps: {list(firebase_apps.keys())}")
-        return {"success": True, "project_id": project_id}
+        return {"success": True, "project_id": project_id, "profile_id": profile_id}
     except Exception as e:
         logger.error(f"Failed to add project: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to add project: {str(e)}")
@@ -640,56 +1066,113 @@ async def bulk_delete_projects_from_google_cloud(request: Request):
         raise HTTPException(status_code=500, detail=error_msg)
 
 @app.get("/projects")
-async def list_projects():
-    # Add status to each project
+async def list_projects(request: Request, search: Optional[str] = None, limit: Optional[int] = None, offset: Optional[int] = None):
+    current_user = get_current_user_from_request(request)
+    
+    # Check if user is admin
+    users = load_app_users()
+    user_data = next((u for u in users.get('users', []) if u.get('username') == current_user), None)
+    is_admin = user_data and user_data.get('role') == 'admin'
+    
+    # Get projects from global variable (already loaded)
+    projects_data = list(projects.values()) if projects else []
+    logger.info(f"list_projects: current_user={current_user}, is_admin={is_admin}, projects_count={len(projects_data)}")
+    logger.info(f"Global projects keys: {list(projects.keys()) if projects else 'None'}")
+    
+    # Add status to each project and support search/pagination
     project_list = []
-    for project_id, project in projects.items():
+    term = (search or "").strip().lower()
+    
+    for project in projects_data:
+        # Get project_id from serviceAccount
+        project_id = project.get('serviceAccount', {}).get('project_id')
+        if not project_id:
+            continue
+            
+        # Migrate existing projects to admin ownership if no owner set
+        if 'ownerId' not in project:
+            project['ownerId'] = 'admin'
+            
+        # Filter by ownership (admin sees all, users see only their own)
+        if not is_admin and project.get('ownerId') != current_user:
+            continue
+            
         status = "active" if project_id in firebase_apps else "error"
         project_with_status = dict(project)
         project_with_status["status"] = status
         project_with_status["id"] = project_id  # Ensure id is present
+        
+        if term:
+            name_lc = (project_with_status.get('name') or '').lower()
+            email_lc = (project_with_status.get('adminEmail') or '').lower()
+            if term not in name_lc and term not in email_lc and term not in project_id.lower():
+                continue
         project_list.append(project_with_status)
-    return {"projects": project_list}
+    
+    # Save projects if we migrated any
+    if any('ownerId' not in project for project in projects_data):
+        save_projects_to_file()
+    
+    total = len(project_list)
+    if limit is not None and offset is not None:
+        try:
+            l = max(1, min(int(limit), 500))
+            o = max(0, int(offset))
+            project_list = project_list[o:o+l]
+        except Exception:
+            pass
+    return {"projects": project_list, "total": total}
 
 @app.get("/projects/{project_id}/users")
-async def load_users(project_id: str):
+async def load_users(project_id: str, limit: Optional[int] = 1000, page_token: Optional[str] = None, search: Optional[str] = None):
     try:
         if project_id not in firebase_apps:
             # Project not initialized or not found
             raise HTTPException(status_code=404, detail="Project not found or not initialized. Please check your service account and project setup.")
 
         app = firebase_apps[project_id]
-        users = []
+        # Firebase Admin SDK does not support arbitrary offset; use page tokens.
+        # If a page_token is provided, resume from there; otherwise start fresh.
         try:
-            page = auth.list_users(app=app)
+            page = auth.list_users(app=app, page_token=page_token) if page_token else auth.list_users(app=app)
         except Exception as e:
-            # If the credentials are invalid or Firebase connection fails
             logger.error(f"Firebase connection error for project {project_id}: {str(e)}")
             raise HTTPException(status_code=400, detail=f"Failed to connect to Firebase: {str(e)}")
 
-        while page:
-            for user in page.users:
-                created_at = None
-                if user.user_metadata and user.user_metadata.creation_timestamp:
-                    try:
-                        if hasattr(user.user_metadata.creation_timestamp, 'timestamp'):
-                            created_at = datetime.fromtimestamp(user.user_metadata.creation_timestamp.timestamp()).isoformat()
-                        else:
-                            created_at = str(user.user_metadata.creation_timestamp)
-                    except:
-                        created_at = None
+        result_users = []
+        next_token: Optional[str] = None
+        max_to_collect = max(1, min(int(limit or 1000), 1000))  # Firebase returns up to 1000 per page
+        search_lc = (search or "").strip().lower()
 
-                users.append({
-                    "uid": user.uid,
-                    "email": user.email or "",
-                    "displayName": user.display_name,
-                    "disabled": user.disabled,
-                    "emailVerified": user.email_verified,
-                    "createdAt": created_at,
-                })
-            page = page.get_next_page() if page.has_next_page else None
+        # Collect up to 'limit' users from the current page only to prevent huge loads
+        for user in page.users:
+            if len(result_users) >= max_to_collect:
+                break
+            if search_lc:
+                email_lc = (user.email or "").lower()
+                name_lc = (user.display_name or "").lower()
+                if search_lc not in email_lc and search_lc not in name_lc:
+                    continue
+            created_at = None
+            if user.user_metadata and user.user_metadata.creation_timestamp:
+                try:
+                    if hasattr(user.user_metadata.creation_timestamp, 'timestamp'):
+                        created_at = datetime.fromtimestamp(user.user_metadata.creation_timestamp.timestamp()).isoformat()
+                    else:
+                        created_at = str(user.user_metadata.creation_timestamp)
+                except Exception:
+                    created_at = None
+            result_users.append({
+                "uid": user.uid,
+                "email": user.email or "",
+                "displayName": user.display_name,
+                "disabled": user.disabled,
+                "emailVerified": user.email_verified,
+                "createdAt": created_at,
+            })
 
-        return {"users": users}
+        next_token = page.next_page_token if hasattr(page, 'next_page_token') else None
+        return {"users": result_users, "nextPageToken": next_token}
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -846,9 +1329,10 @@ async def bulk_delete_users(bulk_delete: dict):
 
 # Campaign Management
 @app.post("/campaigns")
-async def create_campaign(campaign: CampaignCreate):
-    """Create a new campaign"""
+async def create_campaign(campaign: CampaignCreate, request: Request):
+    """Create a new campaign with user ownership"""
     try:
+        current_user = get_current_user_from_request(request)
         campaign_id = str(uuid.uuid4())
         
         campaign_data = {
@@ -865,7 +1349,8 @@ async def create_campaign(campaign: CampaignCreate):
             "successful": 0,
             "failed": 0,
             "errors": [],
-            "projectStats": {pid: {"processed": 0, "successful": 0, "failed": 0} for pid in campaign.projectIds}
+            "projectStats": {pid: {"processed": 0, "successful": 0, "failed": 0} for pid in campaign.projectIds},
+            "ownerId": current_user  # Set ownership to current user
         }
         
         active_campaigns[campaign_id] = campaign_data
@@ -877,11 +1362,30 @@ async def create_campaign(campaign: CampaignCreate):
         raise HTTPException(status_code=500, detail=f"Failed to create campaign: {str(e)}")
 
 @app.get("/campaigns")
-async def list_campaigns(page: int = 1, limit: int = 10):
-    """List all campaigns with pagination, sorted by creation date (newest first)"""
+async def list_campaigns(request: Request, page: int = 1, limit: int = 10):
+    """List campaigns with user isolation and pagination, sorted by creation date (newest first)"""
     try:
-        # Convert campaigns to list and sort by creation date (newest first)
-        campaigns_list = list(active_campaigns.values())
+        current_user = get_current_user_from_request(request)
+        
+        # Check if user is admin
+        users = load_app_users()
+        user_data = next((u for u in users.get('users', []) if u.get('username') == current_user), None)
+        is_admin = user_data and user_data.get('role') == 'admin'
+        
+        # Load campaigns from file to get ownership info
+        campaigns_data = load_campaigns_from_file()
+        
+        # Filter campaigns based on user access
+        if is_admin:
+            # Admin sees all campaigns
+            campaigns_list = list(active_campaigns.values())
+        else:
+            # Users see only their own campaigns
+            user_campaigns = [c for c in campaigns_data if c.get('ownerId') == current_user]
+            # Only show campaigns that are also in active_campaigns
+            campaigns_list = [c for c in user_campaigns if c.get('id') in active_campaigns]
+        
+        # Sort by creation date (newest first)
         campaigns_list.sort(key=lambda x: x.get('createdAt', ''), reverse=True)
         
         # Calculate pagination
@@ -905,6 +1409,7 @@ async def list_campaigns(page: int = 1, limit: int = 10):
             }
         }
     except Exception as e:
+        logger.error(f"Error in list_campaigns: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to list campaigns: {str(e)}")
 
 @app.get("/campaigns/{campaign_id}")
@@ -990,65 +1495,51 @@ async def get_all_daily_counts():
     """Get all daily counts"""
     return {"daily_counts": daily_counts}
 
-def get_project_firebase_config(project):
-    firebase_config = project.get("firebaseConfig")
-    if not firebase_config:
-        raise Exception("Missing firebaseConfig for project")
-    return firebase_config
-
 def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_name=None):
-    import pyrebase
-    import firebase_admin
-    from firebase_admin import auth
-    import os
-    import json
-    import logging
     import concurrent.futures
+    import logging
     
     # Ensure all IDs are strings and not None
     project_id = str(project_id) if project_id is not None else ''
     campaign_id = str(campaign_id) if campaign_id is not None else ''
     user_ids = [str(uid) for uid in user_ids if uid is not None]
     
-    # Re-initialize Firebase and Pyrebase in the process
-    PROJECTS_FILE = 'projects.json'
-    with open(PROJECTS_FILE, 'r') as f:
-        loaded = json.load(f)
-        project = next((p for p in loaded if p['serviceAccount'].get('project_id') == project_id), None)
+    logger.info(f"[{project_id}] Starting fire_all_emails: {len(user_ids)} users, workers={workers}, lightning={lightning}")
     
-    if not project:
-        return
+    # Use existing Firebase apps instead of re-initializing
+    if project_id not in firebase_apps:
+        logger.error(f"[{project_id}] Project not found in firebase_apps")
+        return 0
     
-    cred = firebase_admin.credentials.Certificate(project['serviceAccount'])
+    if project_id not in pyrebase_apps:
+        logger.error(f"[{project_id}] Project not found in pyrebase_apps")
+        return 0
     
-    # Use a unique app name for each process to avoid conflicts
-    if not app_name or app_name is None:
-        app_name = f"{project_id}_{os.getpid()}_{uuid.uuid4().hex[:6]}"
-    
-    # For unique app names, we can safely initialize without checking
-        firebase_app = firebase_admin.initialize_app(cred, name=app_name)
-    logger.info(f"Initialized Firebase app {app_name} for campaign processing")
-    
-    firebase_config = project.get("firebaseConfig")
-    if not firebase_config:
-        raise Exception("Missing firebaseConfig for project")
-    pyrebase_app = pyrebase.initialize_app(firebase_config)
+    firebase_app = firebase_apps[project_id]
+    pyrebase_app = pyrebase_apps[project_id]
     pyrebase_auth = pyrebase_app.auth()
     
     # Get user emails efficiently
     user_emails = {}
+    logger.info(f"[{project_id}] Looking up emails for {len(user_ids)} users")
+    
     try:
         for uid in user_ids:
             try:
                 user = auth.get_user(uid, app=firebase_app)
                 if uid is not None and user.email is not None:
                     user_emails[str(uid)] = str(user.email)
-            except Exception:
+                    logger.debug(f"[{project_id}] Found email for user {uid}: {user.email}")
+                else:
+                    logger.warning(f"[{project_id}] User {uid} has no email")
+            except Exception as e:
+                logger.error(f"[{project_id}] Failed to get user {uid}: {e}")
                 continue
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"[{project_id}] Failed to get user emails: {e}")
     
     email_list = list(user_emails.values())
+    logger.info(f"[{project_id}] Found {len(email_list)} valid emails out of {len(user_ids)} users")
     
     # Optimize worker configuration
     if workers is None:
@@ -1074,7 +1565,7 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
     if not isinstance(max_workers, int) or max_workers < 1:
         max_workers = 1
     
-    logging.info(f"[{project_id}] Starting optimized parallel send with {max_workers} workers for {len(email_list)} emails.")
+    logger.info(f"[{project_id}] Starting optimized parallel send with {max_workers} workers for {len(email_list)} emails.")
     
     # --- CAMPAIGN TRACKING ---
     create_campaign_result(campaign_id, project_id, len(user_emails))
@@ -1088,12 +1579,13 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
                 break
         
         try:
+            logger.info(f"[{project_id}] Sending password reset email to: {email}")
             pyrebase_auth.send_password_reset_email(str(email))
-            logging.info(f"[{project_id}] Sent to {email}")
+            logger.info(f"[{project_id}] Successfully sent to {email}")
             update_campaign_result(campaign_id, project_id, True, user_id=user_id, email=email)
             return True
         except Exception as e:
-            logging.error(f"[ERROR][{project_id}] Failed to send to {email}: {str(e)}")
+            logger.error(f"[ERROR][{project_id}] Failed to send to {email}: {str(e)}")
             update_campaign_result(campaign_id, project_id, False, user_id=user_id, email=email, error=str(e))
             return False
     
@@ -1116,9 +1608,9 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
                 if result:
                     successful_sends += 1
             except Exception as e:
-                logging.error(f"[ERROR][{project_id}] Exception for {email}: {e}")
+                logger.error(f"[ERROR][{project_id}] Exception for {email}: {e}")
     
-    logging.info(f"[{project_id}] Finished sending {len(email_list)} emails with {max_workers} workers. Successful: {successful_sends}")
+    logger.info(f"[{project_id}] Finished sending {len(email_list)} emails with {max_workers} workers. Successful: {successful_sends}")
     
     # Update daily count
     increment_daily_count(project_id)
@@ -1145,24 +1637,31 @@ def fire_all_emails(project_id, user_ids, campaign_id, workers, lightning, app_n
     return successful_sends
 
 @app.post("/campaigns/send")
-async def send_campaign(request: dict):
+async def send_campaign(request: Request):
     """Optimized campaign send endpoint with true parallel processing and no delays."""
-    logger.info("=== CAMPAIGN SEND ENDPOINT CALLED ===")
-    logger.info(f"Received request: {request}")
     try:
+        # Parse JSON body
+        try:
+            request_data = await request.json()
+            logger.info(f"Campaign send request received: {request_data}")
+        except Exception as json_error:
+            logger.error(f"Failed to parse JSON request: {json_error}")
+            return {"success": False, "error": "Invalid JSON request"}
+        
         # Handle different request formats from frontend
-        projects = request.get('projects')
-        project_id = request.get('projectId')  # Single project format
-        user_ids = request.get('userIds')  # Single project format
-        lightning = request.get('lightning', False)
-        workers = request.get('workers')
-        campaign_id = request.get('campaignId', f"campaign_{int(time.time())}")
+        projects = request_data.get('projects')
+        project_id = request_data.get('projectId')  # Single project format
+        user_ids = request_data.get('userIds')  # Single project format
+        lightning = request_data.get('lightning', False)
+        workers = request_data.get('workers')
+        campaign_id = request_data.get('campaignId', f"campaign_{int(time.time())}")
         
         # Convert single project format to multi-project format
         if project_id and user_ids:
             projects = [{'projectId': project_id, 'userIds': user_ids}]
         
         if not projects or not isinstance(projects, list):
+            logger.error(f"No projects provided in request: {request_data}")
             return {"success": False, "error": "No projects provided"}
             
         # Optimize worker configuration
@@ -1269,70 +1768,65 @@ async def send_campaign(request: dict):
 
 @app.post("/test-reset-email")
 async def test_reset_email(request: Request):
-    logger.info("=== TEST RESET EMAIL ENDPOINT CALLED ===")
     data = await request.json()
-    logger.info(f"Received data: {data}")
     email = data.get("email")
     project_id = data.get("project_id")
     
-    logger.info(f"Email: {email}, Project ID: {project_id}")
+    logger.info(f"Test reset email request: email={email}, project_id={project_id}")
     
     if not email or not project_id:
-        logger.error("Missing email or project_id")
         return {"success": False, "error": "Missing email or project_id"}
     
-    project = projects.get(project_id)
-    logger.info(f"Project found: {project is not None}")
-    if not project:
-        logger.error(f"Project {project_id} not found")
-        return {"success": False, "error": "Project not found"}
-    firebase_config = project.get("firebaseConfig")
-    logger.info(f"Firebase config found: {firebase_config is not None}")
-    if not firebase_config:
-        logger.error(f"Missing firebaseConfig for project {project_id}")
-        return {"success": False, "error": "Missing firebaseConfig for project"}
     if project_id not in pyrebase_apps:
-        pyrebase_app = pyrebase.initialize_app(firebase_config)
-        pyrebase_apps[project_id] = pyrebase_app
-    else:
-        pyrebase_app = pyrebase_apps[project_id]
-    firebase = pyrebase_app
+        logger.error(f"Project {project_id} not found in pyrebase_apps")
+        return {"success": False, "error": "Project not initialized"}
+    
+    if project_id not in firebase_apps:
+        logger.error(f"Project {project_id} not found in firebase_apps")
+        return {"success": False, "error": "Firebase Admin not initialized for this project"}
+    
+    firebase = pyrebase_apps[project_id]
     auth_client = firebase.auth()
     admin_auth = firebase_apps[project_id]
     
     created_user_uid = None
+    user_deleted = False
     
     try:
+        logger.info(f"Starting test email process for {email} in project {project_id}")
+        
         # Generate random password
         an = random.randint(50, 9215)
         password = f'r{an}ompa{an}ordmf'
         
         # Create user with Firebase Auth
+        logger.info(f"Creating test user: {email}")
         user = auth_client.create_user_with_email_and_password(email, password)
         created_user_uid = user['localId']
         
         logger.info(f"Test user created: {email} with UID: {created_user_uid}")
         
         # Send password reset email
+        logger.info(f"Sending password reset email to: {email}")
         auth_client.send_password_reset_email(email)
         
-        logger.info(f"Password reset email sent to: {email}")
+        logger.info(f"Password reset email sent successfully to: {email}")
         
-        # Wait a moment for the email to be sent (reduced wait time)
-        await asyncio.sleep(1)
+        # Wait a moment for the email to be sent
+        await asyncio.sleep(2)
         
         # Force delete the test user using Firebase Admin SDK
+        logger.info(f"Deleting test user: {email} with UID: {created_user_uid}")
         try:
             auth.delete_user(created_user_uid, app=admin_auth)
-            logger.info(f"Test user deleted: {email} with UID: {created_user_uid}")
+            logger.info(f"Test user deleted successfully: {email} with UID: {created_user_uid}")
             user_deleted = True
         except Exception as delete_error:
             logger.error(f"Failed to delete test user {created_user_uid}: {delete_error}")
-            user_deleted = False
             
             # Try alternative deletion method
             try:
-                # Try to delete by email if UID method failed
+                logger.info(f"Trying alternative deletion by email: {email}")
                 user_record = auth.get_user_by_email(email, app=admin_auth)
                 auth.delete_user(user_record.uid, app=admin_auth)
                 logger.info(f"Test user deleted by email: {email}")
@@ -1340,6 +1834,8 @@ async def test_reset_email(request: Request):
             except Exception as alt_delete_error:
                 logger.error(f"Alternative deletion also failed: {alt_delete_error}")
                 user_deleted = False
+        
+        logger.info(f"Test email process completed: email={email}, user_deleted={user_deleted}")
         
         return {
             "success": True, 
@@ -1353,6 +1849,7 @@ async def test_reset_email(request: Request):
         
         # Cleanup: Try to delete the user if it was created
         if created_user_uid:
+            logger.info(f"Attempting cleanup for created user: {created_user_uid}")
             try:
                 auth.delete_user(created_user_uid, app=admin_auth)
                 logger.info(f"Cleanup: Test user {created_user_uid} deleted after error")
@@ -1363,6 +1860,7 @@ async def test_reset_email(request: Request):
                 
                 # Try alternative cleanup
                 try:
+                    logger.info(f"Trying alternative cleanup for: {email}")
                     user_record = auth.get_user_by_email(email, app=admin_auth)
                     auth.delete_user(user_record.uid, app=admin_auth)
                     logger.info(f"Alternative cleanup successful for {email}")
@@ -1387,6 +1885,22 @@ async def gemini_api(request: Request):
     # Dummy response for now
     return {"response": f"Gemini API would respond to: {prompt}"}
 
+@app.post("/test-smtp")
+async def test_smtp(request: Request):
+    """Simple SMTP test endpoint"""
+    try:
+        smtp_settings = load_smtp_settings()
+        logger.info(f"SMTP Settings loaded: {smtp_settings}")
+        
+        if not smtp_settings.get('host'):
+            return {"success": False, "message": "SMTP host not configured", "settings": smtp_settings}
+        
+        return {"success": True, "message": "SMTP settings loaded", "settings": smtp_settings}
+        
+    except Exception as e:
+        logger.error(f"Error testing SMTP: {e}")
+        return {"success": False, "message": f"Error: {str(e)}"}
+
 @app.post("/projects/{project_id}/reconnect")
 async def reconnect_project(project_id: str):
     try:
@@ -1400,15 +1914,19 @@ async def reconnect_project(project_id: str):
             except Exception as e:
                 logger.warning(f"Error removing old Firebase app: {e}")
             del firebase_apps[project_id]
-        if project_id in pyrebase_apps:
-            del pyrebase_apps[project_id]
-        firebase_config = project.get("firebaseConfig")
-        if not firebase_config:
-            return {"success": False, "error": "Missing firebaseConfig for project"}
+        # Re-initialize Firebase Admin SDK
         cred = credentials.Certificate(project['serviceAccount'])
         firebase_app = firebase_admin.initialize_app(cred, name=project_id)
         firebase_apps[project_id] = firebase_app
-        pyrebase_app = pyrebase.initialize_app(firebase_config)
+        # Re-initialize Pyrebase with custom authDomain if available
+        auth_domain = project.get('authDomain', f"{project_id}.firebaseapp.com")
+        pyrebase_config = {
+            "apiKey": project['apiKey'],
+            "authDomain": auth_domain,
+            "databaseURL": f"https://{project_id}-default-rtdb.firebaseio.com",
+            "storageBucket": f"{project_id}.appspot.com",
+        }
+        pyrebase_app = pyrebase.initialize_app(pyrebase_config)
         pyrebase_apps[project_id] = pyrebase_app
         logger.info(f"Project {project_id} reconnected successfully")
         return {"success": True, "project_id": project_id}
@@ -1743,27 +2261,24 @@ class BulkResetTemplateUpdate(BaseModel):
 @app.post("/api/update-reset-template")
 async def update_reset_template(data: ResetTemplateUpdate, request: Request):
     """Update reset password template for a single project"""
-    return await _update_reset_template_internal(data.senderName, data.fromAddress, data.replyTo, data.subject, data.body, None, [data.project_id], data.user)
+    try:
+        logger.info(f"Template update request received for project {data.project_id}")
+        logger.info(f"Body length: {len(data.body) if data.body else 0} characters")
+        return await _update_reset_template_internal(data.senderName, data.fromAddress, data.replyTo, data.subject, data.body, None, [data.project_id], data.user)
+    except Exception as e:
+        logger.error(f"Template update failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Template update failed: {str(e)}")
 
 @app.post("/api/update-reset-template-bulk")
 async def update_reset_template_bulk(data: BulkResetTemplateUpdate, request: Request):
     """Update reset password template for multiple projects in parallel"""
-    logger.info("=== UPDATE RESET TEMPLATE BULK ENDPOINT CALLED ===")
-    logger.info(f"Received data length - senderName: {len(data.senderName) if data.senderName else 0}, fromAddress: {len(data.fromAddress) if data.fromAddress else 0}, replyTo: {len(data.replyTo) if data.replyTo else 0}, subject: {len(data.subject) if data.subject else 0}, body: {len(data.body) if data.body else 0}, authDomain: {len(data.authDomain) if data.authDomain else 0}")
-    logger.info(f"Project IDs: {data.project_ids}")
-    
-    # Validate input
-    if not data.project_ids:
-        raise HTTPException(status_code=400, detail="No projects selected")
-    
-    # Check template size limits
-    if data.body and len(data.body) > 1000000:  # 1MB limit
-        raise HTTPException(status_code=400, detail="Template body too large (max 1MB)")
-    
-    if data.subject and len(data.subject) > 1000:
-        raise HTTPException(status_code=400, detail="Subject too long (max 1000 characters)")
-    
-    return await _update_reset_template_internal(data.senderName, data.fromAddress, data.replyTo, data.subject, data.body, data.authDomain, data.project_ids, data.user)
+    try:
+        logger.info(f"Bulk template update request received for {len(data.project_ids)} projects")
+        logger.info(f"Body length: {len(data.body) if data.body else 0} characters")
+        return await _update_reset_template_internal(data.senderName, data.fromAddress, data.replyTo, data.subject, data.body, data.authDomain, data.project_ids, data.user)
+    except Exception as e:
+        logger.error(f"Bulk template update failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Bulk template update failed: {str(e)}")
 
 async def _update_reset_template_internal(senderName: Optional[str] = None, fromAddress: Optional[str] = None, replyTo: Optional[str] = None, subject: Optional[str] = None, body: Optional[str] = None, authDomain: Optional[str] = None, project_ids: List[str] = [], user: Optional[str] = None):
     # Sanitize and build payload only with provided fields
@@ -1771,23 +2286,23 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
         template = {}
         if senderName is not None:
             if not isinstance(senderName, str) or len(senderName) > 100000:
-                raise HTTPException(status_code=400, detail="Invalid senderName (max 100KB)")
+                raise HTTPException(status_code=400, detail="Invalid senderName - too long")
             template["senderDisplayName"] = senderName
         if fromAddress is not None:
             if not isinstance(fromAddress, str) or len(fromAddress) > 100000:
-                raise HTTPException(status_code=400, detail="Invalid fromAddress (max 100KB)")
+                raise HTTPException(status_code=400, detail="Invalid fromAddress - too long")
             template["senderLocalPart"] = fromAddress
         if replyTo is not None:
             if not isinstance(replyTo, str) or len(replyTo) > 100000:
-                raise HTTPException(status_code=400, detail="Invalid replyTo (max 100KB)")
+                raise HTTPException(status_code=400, detail="Invalid replyTo - too long")
             template["replyTo"] = replyTo
         if subject is not None:
             if not isinstance(subject, str) or len(subject) > 100000:
-                raise HTTPException(status_code=400, detail="Invalid subject (max 100KB)")
+                raise HTTPException(status_code=400, detail="Invalid subject - too long")
             template["subject"] = subject
         if body is not None:
-            if not isinstance(body, str) or len(body) > 1000000:  # 1MB limit
-                raise HTTPException(status_code=400, detail="Invalid body (max 1MB)")
+            if not isinstance(body, str) or len(body) > 1000000:  # Increased to 1MB for large HTML templates
+                raise HTTPException(status_code=400, detail="Invalid body - too long (max 1MB)")
             template["body"] = body
         return template
 
@@ -1798,8 +2313,10 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
 
     async def update_single_project(project_id: str):
         try:
+            logger.info(f"Updating template for project: {project_id}")
             project = projects.get(project_id)
             if not project:
+                logger.error(f"Project not found: {project_id}")
                 return {"project_id": project_id, "success": False, "error": "Project not found"}
             
             service_account_info = project['serviceAccount']
@@ -1821,7 +2338,12 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
                         }
                     }
                 }
+                logger.info(f"Sending template update to Firebase API for project {project_id}")
                 response = authed_session.patch(url, json=payload)
+                if not response.ok:
+                    error_text = response.text
+                    logger.error(f"Firebase API error for project {project_id}: {response.status_code} - {error_text}")
+                    return {"project_id": project_id, "success": False, "error": f"Firebase API error: {response.status_code} - {error_text}"}
                 response.raise_for_status()
                 logger.info(f"Reset template updated for project {project_id} by {user or 'unknown'} at {datetime.now().isoformat()}")
             
@@ -1830,37 +2352,24 @@ async def _update_reset_template_internal(senderName: Optional[str] = None, from
                 # Update local storage
                 project['authDomain'] = authDomain.strip()
                 
-                # Update Firebase Auth domain configuration using the correct API
+                # Update Firebase Auth domain configuration
+                domain_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config?updateMask=signIn.allowDuplicateEmails,signIn.email,authorizedDomains"
+                domain_payload = {
+                    "authorizedDomains": [authDomain.strip(), f"{project_id}.firebaseapp.com"],
+                    "signIn": {
+                        "email": {
+                            "enabled": True,
+                            "passwordRequired": True
+                        },
+                        "allowDuplicateEmails": False
+                    }
+                }
                 try:
-                    # First, get current authorized domains
-                    domains_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config"
-                    domains_response = authed_session.get(domains_url)
-                    domains_response.raise_for_status()
-                    current_config = domains_response.json()
-                    
-                    # Extract current authorized domains
-                    current_domains = current_config.get('authorizedDomains', [])
-                    new_domain = authDomain.strip()
-                    
-                    # Add new domain if not already present
-                    if new_domain not in current_domains:
-                        current_domains.append(new_domain)
-                        
-                        # Update with new domains
-                        domain_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config?updateMask=authorizedDomains"
-                        domain_payload = {
-                            "authorizedDomains": current_domains
-                        }
-                        
-                        domain_response = authed_session.patch(domain_url, json=domain_payload)
-                        domain_response.raise_for_status()
-                        logger.info(f"Successfully updated authorized domains for project {project_id}: {current_domains}")
-                    else:
-                        logger.info(f"Domain {new_domain} already authorized for project {project_id}")
-                        
+                    domain_response = authed_session.patch(domain_url, json=domain_payload)
+                    domain_response.raise_for_status()
+                    logger.info(f"Updated Firebase Auth domain configuration for project {project_id} to include {authDomain.strip()}")
                 except Exception as domain_error:
-                    logger.error(f"Failed to update Firebase Auth domain config for {project_id}: {domain_error}")
-                    # Continue with template update even if domain update fails
+                    logger.warning(f"Failed to update Firebase Auth domain config for {project_id}: {domain_error}")
                 
                 # Also try to update the email sender domain via Identity Platform
                 try:
@@ -2315,13 +2824,81 @@ def save_profiles_to_file(profiles):
     except Exception as e:
         logger.error(f"Error saving profiles: {str(e)}")
 
+def get_current_user_from_request(request: Request) -> str:
+    """Extract current user from request headers or return 'anonymous'"""
+    try:
+        # Try to get from app-username header (set by frontend)
+        username = request.headers.get('X-App-Username')
+        logger.info(f"Request headers: {dict(request.headers)}")
+        logger.info(f"Extracted username: {username}")
+        if username and username.strip():
+            return username.strip()
+        
+        # Try to get from referer header to extract username from URL
+        referer = request.headers.get('referer', '')
+        if referer and 'localhost:8080' in referer:
+            # This is likely a frontend request, try to get username from localStorage or session
+            # For now, fallback to 'admin' for frontend requests to prevent projects from disappearing
+            logger.warning("No X-App-Username header found, but this appears to be a frontend request. Treating as admin to prevent data loss.")
+            return 'admin'
+        
+        # Fallback to 'anonymous' - no admin privileges by default
+        logger.warning("No X-App-Username header found, treating as anonymous")
+        return 'anonymous'
+    except Exception as e:
+        logger.error(f"Error extracting username: {e}")
+        return 'anonymous'
+
+def filter_user_data(data_list: list, user: str, is_admin: bool = False) -> list:
+    """Filter data to show only user's own data, unless user is admin"""
+    logger.info(f"Filtering data for user: {user}, is_admin: {is_admin}, total items: {len(data_list)}")
+    
+    if is_admin:
+        logger.info("User is admin, returning all data")
+        return data_list
+    
+    # Only return items owned by this specific user
+    filtered = [item for item in data_list if item.get('ownerId') == user]
+    logger.info(f"After filtering for user {user}: {len(filtered)} items")
+    for item in filtered:
+        logger.info(f"  - {item.get('name', 'NO_NAME')} owned by {item.get('ownerId', 'NO_OWNER')}")
+    
+    return filtered
+
 @app.get('/profiles')
-def get_profiles():
-    return {"profiles": load_profiles_from_file()}
+def get_profiles(request: Request):
+    current_user = get_current_user_from_request(request)
+    logger.info(f"=== GET /profiles - Current user: {current_user} ===")
+    
+    # Check if user is admin
+    users = load_app_users()
+    user_data = next((u for u in users.get('users', []) if u.get('username') == current_user), None)
+    is_admin = user_data and user_data.get('role') == 'admin'
+    logger.info(f"User data found: {bool(user_data)}, is_admin: {is_admin}")
+    
+    all_profiles = load_profiles_from_file()
+    logger.info(f"Total profiles in file: {len(all_profiles)}")
+    
+    # Migrate existing profiles to admin ownership if no owner set
+    migrated = 0
+    for profile in all_profiles:
+        if 'ownerId' not in profile:
+            profile['ownerId'] = 'admin'
+            migrated += 1
+    if migrated > 0:
+        save_profiles_to_file(all_profiles)
+        logger.info(f"Migrated {migrated} profiles to admin ownership")
+    
+    # Filter profiles based on user access
+    user_profiles = filter_user_data(all_profiles, current_user, is_admin)
+    logger.info(f"Returning {len(user_profiles)} profiles for user {current_user}")
+    return {"profiles": user_profiles}
 
 @app.post('/profiles')
-def add_profile(profile: dict):
+def add_profile(profile: dict, request: Request):
+    current_user = get_current_user_from_request(request)
     profiles = load_profiles_from_file()
+    
     # Always assign a unique id and createdAt if not present
     if 'id' not in profile or not profile['id']:
         profile['id'] = str(int(time.time() * 1000))
@@ -2329,16 +2906,30 @@ def add_profile(profile: dict):
         profile['createdAt'] = datetime.utcnow().isoformat() + 'Z'
     if 'projectIds' not in profile:
         profile['projectIds'] = []
+    
+    # Set ownership to current user
+    profile['ownerId'] = current_user
+    
     profiles.append(profile)
     save_profiles_to_file(profiles)
-    return {"success": True}
+    return {"success": True, "profile": profile}
 
 @app.put('/profiles/{profile_id}')
-def update_profile(profile_id: str, updates: dict):
+def update_profile(profile_id: str, updates: dict, request: Request):
+    current_user = get_current_user_from_request(request)
+    
+    # Check if user is admin
+    users = load_app_users()
+    user_data = next((u for u in users.get('users', []) if u.get('username') == current_user), None)
+    is_admin = user_data and user_data.get('role') == 'admin'
+    
     profiles = load_profiles_from_file()
     found = False
     for p in profiles:
         if p["id"] == profile_id:
+            # Check ownership (admin can edit all, users can only edit their own)
+            if not is_admin and p.get('ownerId') != current_user:
+                raise HTTPException(status_code=403, detail="Permission denied")
             p.update(updates)
             found = True
             break
@@ -2348,16 +2939,26 @@ def update_profile(profile_id: str, updates: dict):
     return {"success": True}
 
 @app.delete('/profiles/{profile_id}')
-def delete_profile(profile_id: str):
+def delete_profile(profile_id: str, request: Request):
+    current_user = get_current_user_from_request(request)
+    
+    # Check if user is admin
+    users = load_app_users()
+    user_data = next((u for u in users.get('users', []) if u.get('username') == current_user), None)
+    is_admin = user_data and user_data.get('role') == 'admin'
+    
     profiles = load_profiles_from_file()
     profile_to_delete = None
-    
+
     # Find the profile to delete
     for profile in profiles:
         if profile["id"] == profile_id:
+            # Check ownership (admin can delete all, users can only delete their own)
+            if not is_admin and profile.get('ownerId') != current_user:
+                raise HTTPException(status_code=403, detail="Permission denied")
             profile_to_delete = profile
             break
-    
+
     if not profile_to_delete:
         raise HTTPException(status_code=404, detail="Profile not found")
     
@@ -2489,9 +3090,6 @@ async def update_project_domain(data: DomainUpdate, request: Request):
         new_auth_domain = data.new_auth_domain.strip()
         user = data.user or 'admin'
         
-        logger.info(f"=== UPDATE PROJECT DOMAIN ENDPOINT CALLED ===")
-        logger.info(f"Project ID: {project_id}, New Domain: {new_auth_domain}")
-        
         # Validate domain format
         if not new_auth_domain or '.' not in new_auth_domain:
             raise HTTPException(status_code=400, detail="Invalid domain format")
@@ -2501,48 +3099,8 @@ async def update_project_domain(data: DomainUpdate, request: Request):
             raise HTTPException(status_code=404, detail="Project not found")
         
         project = projects[project_id]
-        service_account_info = project['serviceAccount']
         
-        # Create authenticated session
-        credentials = service_account.Credentials.from_service_account_info(
-            service_account_info,
-            scopes=["https://www.googleapis.com/auth/cloud-platform"]
-        )
-        authed_session = AuthorizedSession(credentials)
-        
-        # First, get current authorized domains
-        try:
-            domains_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config"
-            domains_response = authed_session.get(domains_url)
-            domains_response.raise_for_status()
-            current_config = domains_response.json()
-            
-            current_domains = current_config.get('authorizedDomains', [])
-            logger.info(f"Current authorized domains: {current_domains}")
-            
-            # Add new domain if not already present
-            if new_auth_domain not in current_domains:
-                current_domains.append(new_auth_domain)
-                
-                # Update with new domains
-                url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config?updateMask=authorizedDomains"
-                payload = {
-                    "authorizedDomains": current_domains
-                }
-                
-                logger.info(f"Updating domains with payload: {payload}")
-                response = authed_session.patch(url, json=payload)
-                response.raise_for_status()
-                
-                logger.info(f"Successfully updated authorized domains: {current_domains}")
-            else:
-                logger.info(f"Domain {new_auth_domain} already authorized")
-                
-        except Exception as domain_error:
-            logger.error(f"Failed to update authorized domains: {domain_error}")
-            raise HTTPException(status_code=500, detail=f"Failed to update authorized domains: {str(domain_error)}")
-        
-        # Update the project's auth domain in local storage
+        # Update the project's auth domain
         project['authDomain'] = new_auth_domain
         
         # Save to file
@@ -2561,7 +3119,6 @@ async def update_project_domain(data: DomainUpdate, request: Request):
             "success": True,
             "project_id": project_id,
             "new_auth_domain": new_auth_domain,
-            "authorized_domains": current_domains,
             "message": f"Domain updated successfully to {new_auth_domain}"
         }
         
@@ -2603,45 +3160,8 @@ async def update_project_domain_bulk(data: BulkDomainUpdate, request: Request):
                     continue
                 
                 project = projects[project_id]
-                service_account_info = project['serviceAccount']
                 
-                # Create authenticated session
-                credentials = service_account.Credentials.from_service_account_info(
-                    service_account_info,
-                    scopes=["https://www.googleapis.com/auth/cloud-platform"]
-                )
-                authed_session = AuthorizedSession(credentials)
-                
-                # Update authorized domains in Firebase
-                try:
-                    domains_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config"
-                    domains_response = authed_session.get(domains_url)
-                    domains_response.raise_for_status()
-                    current_config = domains_response.json()
-                    
-                    current_domains = current_config.get('authorizedDomains', [])
-                    
-                    # Add new domain if not already present
-                    if new_auth_domain not in current_domains:
-                        current_domains.append(new_auth_domain)
-                        
-                        # Update with new domains
-                        url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config?updateMask=authorizedDomains"
-                        payload = {
-                            "authorizedDomains": current_domains
-                        }
-                        
-                        response = authed_session.patch(url, json=payload)
-                        response.raise_for_status()
-                        logger.info(f"Updated authorized domains for {project_id}: {current_domains}")
-                    else:
-                        logger.info(f"Domain {new_auth_domain} already authorized for {project_id}")
-                        
-                except Exception as domain_error:
-                    logger.error(f"Failed to update authorized domains for {project_id}: {domain_error}")
-                    raise Exception(f"Failed to update authorized domains: {str(domain_error)}")
-                
-                # Update the project's auth domain in local storage
+                # Update the project's auth domain
                 project['authDomain'] = new_auth_domain
                 
                 # Log the change
@@ -2698,33 +3218,11 @@ async def get_project_domains():
             default_domain = f"{project_id}.firebaseapp.com"
             has_custom_domain = current_auth_domain != default_domain
             
-            # Try to get real authorized domains from Firebase
-            authorized_domains = []
-            try:
-                if project_id in firebase_apps and 'serviceAccount' in project:
-                    service_account_info = project['serviceAccount']
-                    credentials = service_account.Credentials.from_service_account_info(
-                        service_account_info,
-                        scopes=["https://www.googleapis.com/auth/cloud-platform"]
-                    )
-                    authed_session = AuthorizedSession(credentials)
-                    
-                    domains_url = f"https://identitytoolkit.googleapis.com/v2/projects/{project_id}/config"
-                    domains_response = authed_session.get(domains_url)
-                    domains_response.raise_for_status()
-                    current_config = domains_response.json()
-                    authorized_domains = current_config.get('authorizedDomains', [])
-                    logger.info(f"Retrieved authorized domains for {project_id}: {authorized_domains}")
-            except Exception as e:
-                logger.warning(f"Failed to get authorized domains for {project_id}: {e}")
-                authorized_domains = [default_domain]  # Fallback to default
-            
             domain_info.append({
                 "project_id": project_id,
                 "project_name": project.get('name', 'Unknown'),
                 "current_auth_domain": current_auth_domain,
                 "default_domain": default_domain,
-                "authorized_domains": authorized_domains,
                 "has_custom_domain": has_custom_domain,
                 "is_firebase_initialized": project_id in firebase_apps,
                 "is_pyrebase_initialized": project_id in pyrebase_apps,
@@ -2987,30 +3485,6 @@ async def update_project(
             raise HTTPException(status_code=400, detail=f"Failed to re-initialize Pyrebase: {e}")
     save_projects_to_file()
     return {"success": True, "project_id": project_id, "updated": updated}
-
-@app.put("/projects/{project_id}/auth-domain")
-async def update_auth_domain(project_id: str, data: dict):
-    """Update the authDomain in the firebaseConfig for a project and re-init Pyrebase."""
-    new_auth_domain = data.get("authDomain")
-    if not new_auth_domain:
-        raise HTTPException(status_code=400, detail="Missing authDomain")
-    project = projects.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    firebase_config = project.get("firebaseConfig")
-    if not firebase_config:
-        raise HTTPException(status_code=400, detail="No firebaseConfig for project")
-    firebase_config["authDomain"] = new_auth_domain
-    # Re-init Pyrebase
-    try:
-        pyrebase_app = pyrebase.initialize_app(firebase_config)
-        pyrebase_apps[project_id] = pyrebase_app
-        logger.info(f"Updated authDomain for {project_id} to {new_auth_domain}")
-    except Exception as e:
-        logger.error(f"Failed to re-init Pyrebase for {project_id}: {e}")
-        raise HTTPException(status_code=400, detail=f"Failed to re-init Pyrebase: {e}")
-    save_projects_to_file()
-    return {"success": True, "authDomain": new_auth_domain}
 
 if __name__ == "__main__":
     import uvicorn
