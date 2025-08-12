@@ -66,27 +66,43 @@ apt update && apt upgrade -y
 
 # Install required packages
 print_info "Installing required packages..."
-apt install -y \
-    python3 \
-    python3-pip \
-    python3-venv \
-    postgresql \
-    postgresql-contrib \
-    redis-server \
-    nginx \
-    supervisor \
-    curl \
-    wget \
-    git \
-    unzip \
-    software-properties-common \
-    apt-transport-https \
-    ca-certificates \
-    gnupg \
-    lsb-release \
-    build-essential \
-    libpq-dev \
-    python3-dev
+
+# Update package list first
+apt update
+
+# Install packages with error handling
+PACKAGES=(
+    "python3"
+    "python3-pip" 
+    "python3-venv"
+    "postgresql"
+    "postgresql-contrib"
+    "redis-server"
+    "nginx"
+    "supervisor"
+    "curl"
+    "wget"
+    "git"
+    "unzip"
+    "software-properties-common"
+    "apt-transport-https"
+    "ca-certificates"
+    "gnupg"
+    "lsb-release"
+    "build-essential"
+    "libpq-dev"
+    "python3-dev"
+)
+
+for package in "${PACKAGES[@]}"; do
+    print_info "Installing $package..."
+    if apt install -y "$package"; then
+        print_success "$package installed successfully"
+    else
+        print_error "Failed to install $package"
+        exit 1
+    fi
+done
 
 # Check Ubuntu version for specific handling
 UBUNTU_VERSION=$(lsb_release -rs)
@@ -141,7 +157,7 @@ apt update
 
 # Install Node.js with force overwrite to resolve conflicts
 print_info "Installing Node.js with conflict resolution..."
-apt install -y nodejs --allow-downgrades --allow-overwrite
+apt install -y nodejs --allow-downgrades
 
 # If still having issues, try to resolve the specific libnode-dev conflict
 if ! command -v node &> /dev/null; then
@@ -243,7 +259,20 @@ sudo -u $SERVICE_USER npm install
 
 # Build frontend
 print_info "Building frontend..."
-sudo -u $SERVICE_USER npm run build
+if sudo -u $SERVICE_USER npm run build; then
+    print_success "Frontend built successfully"
+    
+    # Verify build output
+    if [ -f "$APP_DIR/dist/index.html" ]; then
+        print_success "Frontend build verified - index.html found"
+    else
+        print_error "Frontend build failed - index.html not found"
+        exit 1
+    fi
+else
+    print_error "Frontend build failed"
+    exit 1
+fi
 
 # Create environment file
 print_info "Creating environment configuration..."
@@ -426,8 +455,36 @@ EOF
 ln -sf /etc/nginx/sites-available/firebase-manager /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
 
+# Remove default nginx page completely
+print_info "Removing default nginx page..."
+rm -f /var/www/html/index.nginx-debian.html
+rm -f /var/www/html/index.html
+rm -f /usr/share/nginx/html/index.html
+
 # Test Nginx configuration
-nginx -t
+print_info "Testing Nginx configuration..."
+if nginx -t; then
+    print_success "Nginx configuration is valid"
+    
+    # Restart Nginx
+    print_info "Restarting Nginx..."
+    systemctl restart nginx
+    systemctl enable nginx
+    
+    # Wait a moment for Nginx to start
+    sleep 3
+    
+    # Verify Nginx is running
+    if systemctl is-active --quiet nginx; then
+        print_success "Nginx is running successfully"
+    else
+        print_error "Nginx failed to start"
+        exit 1
+    fi
+else
+    print_error "Nginx configuration test failed"
+    exit 1
+fi
 
 # Create firewall rules
 print_info "Configuring firewall..."
@@ -612,3 +669,20 @@ else
 fi
 
 print_info "Installation script completed successfully!"
+
+# Final verification
+print_info "Performing final verification..."
+if [ -f "$APP_DIR/dist/index.html" ] && systemctl is-active --quiet nginx; then
+    print_success "✅ App interface is ready and accessible!"
+    print_success "✅ Nginx is running and serving your app!"
+    print_success "✅ Default nginx page has been removed!"
+    
+    # Test app interface
+    if curl -s http://localhost | grep -q "Firebase Manager"; then
+        print_success "✅ App interface is displaying correctly!"
+    else
+        print_warning "⚠️  App interface may not be displaying correctly. Please check manually."
+    fi
+else
+    print_warning "⚠️  Some verification steps failed. Please check manually."
+fi
