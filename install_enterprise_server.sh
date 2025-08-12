@@ -46,6 +46,31 @@ print_info() {
     echo -e "${BLUE}ℹ️  $1${NC}"
 }
 
+# Function to safely change directory
+safe_cd() {
+    local target_dir="$1"
+    local operation="$2"
+    
+    if cd "$target_dir" 2>/dev/null; then
+        print_info "Changed to directory: $target_dir for $operation"
+        return 0
+    else
+        print_error "Failed to change to directory: $target_dir for $operation"
+        return 1
+    fi
+}
+
+# Function to ensure we're in a safe working directory
+ensure_safe_directory() {
+    if [[ "$PWD" == "/" ]] || [[ "$PWD" == "/root" ]] || [[ "$PWD" == "/home" ]]; then
+        print_warning "Current directory is not safe for operations, changing to /tmp"
+        cd /tmp || {
+            print_error "Failed to change to /tmp"
+            exit 1
+        }
+    fi
+}
+
 # Check if running as root
 if [[ $EUID -ne 0 ]]; then
    print_error "This script must be run as root (use sudo)"
@@ -64,6 +89,9 @@ if [[ "$UBUNTU_VERSION" != "20.04" && "$UBUNTU_VERSION" != "22.04" && "$UBUNTU_V
 fi
 
 print_info "Starting installation on Ubuntu $UBUNTU_VERSION..."
+
+# Ensure we're in a safe working directory
+ensure_safe_directory
 
 # COMPLETE CLEANUP - Remove any existing installation
 print_info "🧹 Performing complete cleanup of any existing installation..."
@@ -256,17 +284,40 @@ systemctl enable redis-server
 # Configure PostgreSQL
 print_info "Configuring PostgreSQL..."
 
+# Ensure PostgreSQL is running and accessible
+print_info "Verifying PostgreSQL service..."
+if ! systemctl is-active --quiet postgresql; then
+    print_error "PostgreSQL service is not running"
+    systemctl start postgresql
+    sleep 3
+fi
+
 # Clean up existing database and user
 print_info "Cleaning up existing PostgreSQL data..."
+cd /tmp  # Change to a safe directory
 sudo -u postgres psql -c "DROP DATABASE IF EXISTS $DB_NAME;" 2>/dev/null || true
 sudo -u postgres psql -c "DROP USER IF EXISTS $DB_USER;" 2>/dev/null || true
 
 # Create fresh database and user
 print_info "Creating fresh database and user..."
-sudo -u postgres psql -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASSWORD';"
-sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;"
-sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;"
-sudo -u postgres psql -c "ALTER USER $DB_USER CREATEDB;"
+sudo -u postgres psql -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASSWORD';" || {
+    print_error "Failed to create PostgreSQL user"
+    exit 1
+}
+sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" || {
+    print_error "Failed to create PostgreSQL database"
+    exit 1
+}
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;" || {
+    print_error "Failed to grant privileges"
+    exit 1
+}
+sudo -u postgres psql -c "ALTER USER $DB_USER CREATEDB;" || {
+    print_error "Failed to alter user permissions"
+    exit 1
+}
+
+print_success "PostgreSQL configuration completed successfully"
 
 # Configure Redis
 print_info "Configuring Redis..."
@@ -288,7 +339,10 @@ if [ -d ".git" ]; then
     chown -R $SERVICE_USER:$SERVICE_GROUP $APP_DIR
 else
     print_info "Cloning application from repository..."
-    cd $APP_DIR
+    cd $APP_DIR || {
+        print_error "Failed to change to application directory $APP_DIR"
+        exit 1
+    }
     git clone $REPO_URL . || {
         print_error "Could not clone repository from $REPO_URL"
         print_error "Please ensure the repository is accessible or copy files manually to $APP_DIR"
@@ -297,9 +351,15 @@ else
     chown -R $SERVICE_USER:$SERVICE_GROUP $APP_DIR
 fi
 
+# Return to original directory for safety
+cd /tmp
+
 # Create Python virtual environment
 print_info "Setting up Python virtual environment..."
-cd $APP_DIR
+cd $APP_DIR || {
+    print_error "Failed to change to application directory for Python setup"
+    exit 1
+}
 sudo -u $SERVICE_USER python3 -m venv venv
 sudo -u $SERVICE_USER $APP_DIR/venv/bin/pip install --upgrade pip
 
@@ -394,7 +454,10 @@ fi
 
 # Run database migrations
 print_info "Running database migrations..."
-cd $APP_DIR
+cd $APP_DIR || {
+    print_error "Failed to change to application directory for migrations"
+    exit 1
+}
 if sudo -u $SERVICE_USER $APP_DIR/venv/bin/python -m src.database.migrations; then
     print_success "Database migrations completed successfully"
 else
