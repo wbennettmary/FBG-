@@ -289,8 +289,6 @@ if [ -f "$APP_DIR/requirements.txt" ]; then
             "prometheus-client"
             "structlog"
             "gunicorn"
-            "supervisor"
-            "nginx"
             "slowapi"
             "healthcheck"
         )
@@ -306,7 +304,7 @@ if [ -f "$APP_DIR/requirements.txt" ]; then
     fi
 else
     print_warning "requirements.txt not found. Installing basic packages..."
-    sudo -u $SERVICE_USER $APP_DIR/venv/bin/pip install fastapi uvicorn firebase-admin pyrebase4 python-dotenv google-auth requests google-cloud-resource-manager python-multipart python-jose passlib aiofiles asyncpg psycopg2-binary sqlalchemy alembic redis aioredis prometheus-client structlog gunicorn supervisor nginx slowapi healthcheck
+    sudo -u $SERVICE_USER $APP_DIR/venv/bin/pip install fastapi uvicorn firebase-admin pyrebase4 python-dotenv google-auth requests google-cloud-resource-manager python-multipart python-jose passlib aiofiles asyncpg psycopg2-binary sqlalchemy alembic redis aioredis prometheus-client structlog gunicorn slowapi healthcheck
 fi
 
 # Install Node.js dependencies

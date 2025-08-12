@@ -39,7 +39,8 @@ async def migrate_app_users():
             logger.warning("No users found in app_users.json")
             return
         
-        async with db_manager.get_pool_connection() as conn:
+        conn = await db_manager.get_pool_connection()
+        try:
             for user in users:
                 # Check if user already exists
                 existing = await conn.fetchrow(
@@ -70,6 +71,8 @@ async def migrate_app_users():
                     # Migrate permissions
                     if user_id:
                         await migrate_user_permissions(conn, user_id, user)
+        finally:
+            await db_manager.release_pool_connection(conn)
         
         logger.info(f"Migrated {len(users)} app users successfully")
         
@@ -129,7 +132,8 @@ async def migrate_profiles():
             logger.warning("No profiles found in profiles.json")
             return
         
-        async with db_manager.get_pool_connection() as conn:
+        conn = await db_manager.get_pool_connection()
+        try:
             for profile in profiles:
                 # Get owner ID
                 owner_username = profile.get('ownerId', 'admin')
@@ -157,6 +161,8 @@ async def migrate_profiles():
                         owner['id'],
                         datetime.now()
                         )
+        finally:
+            await db_manager.release_pool_connection(conn)
         
         logger.info(f"Migrated {len(profiles)} profiles successfully")
         
@@ -179,7 +185,8 @@ async def migrate_projects():
             logger.warning("No projects found in projects.json")
             return
         
-        async with db_manager.get_pool_connection() as conn:
+        conn = await db_manager.get_pool_connection()
+        try:
             for project in projects:
                 # Get owner ID
                 owner_username = project.get('ownerId', 'admin')
@@ -210,6 +217,8 @@ async def migrate_projects():
                             owner['id'],
                             datetime.now()
                             )
+        finally:
+            await db_manager.release_pool_connection(conn)
         
         logger.info(f"Migrated {len(projects)} projects successfully")
         
@@ -232,7 +241,8 @@ async def migrate_campaigns():
             logger.warning("No campaigns found in campaigns.json")
             return
         
-        async with db_manager.get_pool_connection() as conn:
+        conn = await db_manager.get_pool_connection()
+        try:
             for campaign in campaigns:
                 # Get owner ID
                 owner_username = campaign.get('ownerId', 'admin')
@@ -264,6 +274,8 @@ async def migrate_campaigns():
                         owner['id'],
                         datetime.now()
                         )
+        finally:
+            await db_manager.release_pool_connection(conn)
         
         logger.info(f"Migrated {len(campaigns)} campaigns successfully")
         
@@ -274,7 +286,8 @@ async def migrate_campaigns():
 async def create_default_admin():
     """Create default admin user if none exists"""
     try:
-        async with db_manager.get_pool_connection() as conn:
+        conn = await db_manager.get_pool_connection()
+        try:
             # Check if admin exists
             admin = await conn.fetchrow(
                 "SELECT id FROM app_users WHERE username = 'admin'"
@@ -314,6 +327,8 @@ async def create_default_admin():
                 logger.info("Default admin user created successfully")
             else:
                 logger.info("Admin user already exists")
+        finally:
+            await db_manager.release_pool_connection(conn)
                 
     except Exception as e:
         logger.error(f"Failed to create default admin: {e}")
