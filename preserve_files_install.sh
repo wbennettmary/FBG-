@@ -117,11 +117,23 @@ if ! command -v node &> /dev/null; then
     apt-get install -y nodejs
 fi
 
+# Fix npm cache permissions (known issue)
+echo "🔧 Fixing npm cache permissions..."
+mkdir -p /var/www/.npm
+chown -R 33:33 "/var/www/.npm"
+
 # Build frontend with IPv4 configuration
 echo "🔨 Building frontend with IPv4 configuration..."
 chown -R www-data:www-data .
-sudo -u www-data npm install
-sudo -u www-data npm run build
+npm install
+npm run build
+
+# Verify frontend build
+if [ ! -f "dist/index.html" ]; then
+    echo "❌ Frontend build failed - index.html not found"
+    exit 1
+fi
+echo "✅ Frontend build verified - index.html found"
 
 # Create systemd service
 echo "🔧 Creating systemd service..."
@@ -181,12 +193,27 @@ server {
 }
 EOF
 
-# Enable site
+# Enable site and remove default
+echo "🔧 Enabling Firebase Manager site and removing default..."
 ln -sf /etc/nginx/sites-available/firebase-manager /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
+rm -f /etc/nginx/sites-available/default
+
+# Ensure our frontend files are in the right place
+echo "📁 Ensuring frontend files are properly placed..."
+if [ ! -f "$APP_DIR/dist/index.html" ]; then
+    echo "❌ Frontend files missing at $APP_DIR/dist/"
+    ls -la "$APP_DIR/"
+    exit 1
+fi
 
 # Test Nginx config
+echo "🧪 Testing Nginx configuration..."
 nginx -t
+if [ $? -ne 0 ]; then
+    echo "❌ Nginx configuration test failed"
+    exit 1
+fi
 
 # Start services
 echo "🚀 Starting services..."
@@ -280,6 +307,16 @@ if curl -s --max-time 10 http://$SERVER_IP/health > /dev/null; then
     echo "✅ External access: WORKING"
 else
     echo "❌ External access: FAILED"
+fi
+
+# Test frontend serving (ensure not nginx default page)
+echo "Testing frontend serving..."
+RESPONSE=$(curl -s --max-time 10 http://$SERVER_IP/ | head -1)
+if [[ "$RESPONSE" == *"<!DOCTYPE html>"* ]] && ! [[ "$RESPONSE" == *"nginx"* ]]; then
+    echo "✅ Frontend app: SERVING CORRECTLY"
+else
+    echo "❌ Frontend: May be serving nginx default page"
+    echo "Response: $RESPONSE"
 fi
 
 echo ""
