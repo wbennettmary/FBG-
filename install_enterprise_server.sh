@@ -255,11 +255,77 @@ sudo -u $SERVICE_USER $APP_DIR/venv/bin/pip install --upgrade pip
 
 # Install Python dependencies
 print_info "Installing Python dependencies..."
-sudo -u $SERVICE_USER $APP_DIR/venv/bin/pip install -r requirements.txt
+
+# Check if requirements.txt exists
+if [ -f "$APP_DIR/requirements.txt" ]; then
+    print_info "Installing Python packages from requirements.txt..."
+    if sudo -u $SERVICE_USER $APP_DIR/venv/bin/pip install -r requirements.txt; then
+        print_success "Python dependencies installed successfully"
+    else
+        print_error "Failed to install Python dependencies from requirements.txt"
+        print_info "Trying to install packages individually..."
+        
+        # Install packages individually as fallback
+        PACKAGES=(
+            "fastapi"
+            "uvicorn[standard]"
+            "firebase-admin"
+            "pyrebase4"
+            "python-dotenv"
+            "google-auth"
+            "requests"
+            "google-cloud-resource-manager"
+            "python-multipart"
+            "python-jose[cryptography]"
+            "passlib[bcrypt]"
+            "aiofiles"
+            "httpx"
+            "asyncpg"
+            "psycopg2-binary"
+            "sqlalchemy[asyncio]"
+            "alembic"
+            "redis"
+            "aioredis"
+            "prometheus-client"
+            "structlog"
+            "gunicorn"
+            "supervisor"
+            "nginx"
+            "slowapi"
+            "healthcheck"
+        )
+        
+        for package in "${PACKAGES[@]}"; do
+            print_info "Installing $package..."
+            if sudo -u $SERVICE_USER $APP_DIR/venv/bin/pip install "$package"; then
+                print_success "$package installed successfully"
+            else
+                print_warning "Failed to install $package, continuing..."
+            fi
+        done
+    fi
+else
+    print_warning "requirements.txt not found. Installing basic packages..."
+    sudo -u $SERVICE_USER $APP_DIR/venv/bin/pip install fastapi uvicorn firebase-admin pyrebase4 python-dotenv google-auth requests google-cloud-resource-manager python-multipart python-jose passlib aiofiles asyncpg psycopg2-binary sqlalchemy alembic redis aioredis prometheus-client structlog gunicorn supervisor nginx slowapi healthcheck
+fi
 
 # Install Node.js dependencies
 print_info "Installing Node.js dependencies..."
-sudo -u $SERVICE_USER npm install
+
+# Check if package.json exists
+if [ -f "$APP_DIR/package.json" ]; then
+    print_info "Installing Node.js packages from package.json..."
+    if sudo -u $SERVICE_USER npm install; then
+        print_success "Node.js dependencies installed successfully"
+    else
+        print_error "Failed to install Node.js dependencies"
+        exit 1
+    fi
+else
+    print_warning "package.json not found. Creating basic package.json..."
+    sudo -u $SERVICE_USER npm init -y
+    sudo -u $SERVICE_USER npm install react react-dom react-router-dom @types/react @types/react-dom typescript vite @vitejs/plugin-react
+fi
 
 # Build frontend
 print_info "Building frontend..."
