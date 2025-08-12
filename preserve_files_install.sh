@@ -119,9 +119,9 @@ fi
 
 # Build frontend with IPv4 configuration
 echo "🔨 Building frontend with IPv4 configuration..."
-chown -R $SERVICE_USER:$SERVICE_GROUP .
-sudo -u $SERVICE_USER npm install
-sudo -u $SERVICE_USER npm run build
+chown -R www-data:www-data .
+sudo -u www-data npm install
+sudo -u www-data npm run build
 
 # Create systemd service
 echo "🔧 Creating systemd service..."
