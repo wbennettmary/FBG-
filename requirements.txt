@@ -1,35 +1,44 @@
-# Enterprise Server Requirements
+# COMPLETE Firebase Manager Requirements
 setuptools
 wheel
+
+# Core FastAPI
 fastapi
 uvicorn[standard]
+pydantic
+
+# Firebase & Google
 firebase-admin
 pyrebase4
-python-dotenv
 google-auth
-requests
+google-oauth
+google-api-python-client
+google-cloud-core
 google-cloud-resource-manager
-python-multipart
+google-auth-oauthlib
+google-auth-httplib2
+
+# Environment & Configuration
+python-dotenv
+
+# HTTP & Requests
+requests
+httpx
+aiofiles
+
+# Security & Authentication
 python-jose[cryptography]
 passlib[bcrypt]
-aiofiles
-httpx
+python-multipart
 
-# Database (commented out - using JSON files for now)
-# asyncpg
-# psycopg2-binary
-# sqlalchemy[asyncio]
-# alembic
-
-# Caching & Performance (commented out - using JSON files for now)
-# redis
-# aioredis
-# prometheus-client
-# structlog
+# Database
+asyncpg
+psycopg2-binary
+sqlalchemy[asyncio]
+alembic
 
 # Production Server
 gunicorn
 
-# Security & Monitoring
-# slowapi
-# healthcheck 
+# Additional Python utilities
+concurrent-futures 

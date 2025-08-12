@@ -127,12 +127,68 @@ source venv/bin/activate
 # Install Python dependencies
 print_status "Installing Python dependencies..."
 pip install --upgrade pip
-pip install fastapi uvicorn psycopg2-binary python-dotenv
+
+# Install ALL required dependencies from requirements.txt
+print_status "Installing all Python dependencies from requirements.txt..."
+pip install -r requirements.txt
+
+# Install additional dependencies that might not be in requirements.txt
+print_status "Installing additional Python dependencies..."
+pip install \
+    firebase-admin \
+    pyrebase4 \
+    google-auth \
+    google-oauth \
+    google-api-python-client \
+    google-cloud-core \
+    google-cloud-resource-manager \
+    psycopg2-binary \
+    fastapi \
+    uvicorn \
+    python-dotenv \
+    requests \
+    pydantic \
+    python-jose[cryptography] \
+    passlib[bcrypt] \
+    python-multipart || true
+
+print_success "All Python dependencies installed"
 
 # Create Python module structure
 print_status "Setting up Python module structure..."
 touch src/__init__.py
 touch src/utils/__init__.py
+
+# Verify all critical dependencies are installed
+print_status "Verifying Python dependencies..."
+python3 -c "
+import sys
+missing = []
+required_modules = [
+    'fastapi', 'uvicorn', 'firebase_admin', 'pyrebase', 
+    'psycopg2', 'dotenv', 'requests', 'pydantic',
+    'jose', 'passlib', 'google.auth'
+]
+
+for module in required_modules:
+    try:
+        __import__(module)
+        print(f'✅ {module}')
+    except ImportError:
+        print(f'❌ {module}')
+        missing.append(module)
+
+if missing:
+    print(f'Missing modules: {missing}')
+    sys.exit(1)
+else:
+    print('✅ All required Python modules are available')
+"
+
+if [ $? -ne 0 ]; then
+    print_error "Some Python dependencies are missing!"
+    exit 1
+fi
 
 # Create frontend environment file
 print_status "Creating frontend environment configuration..."
