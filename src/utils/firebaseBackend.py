@@ -925,11 +925,15 @@ def reset_daily_counts_at_midnight():
     t = threading.Thread(target=reset_loop, daemon=True)
     t.start()
 
-# Call on startup
-load_projects_from_file()
-load_campaigns_from_file()
-load_daily_counts()
-load_campaign_results_from_file()  # New: Load campaign results
+# Module level initialization (only for non-database mode)
+if os.getenv('USE_DATABASE') != 'true':
+    # Call on startup for JSON file mode
+    load_projects_from_file()
+    load_campaigns_from_file()
+    load_daily_counts()
+    load_campaign_results_from_file()  # New: Load campaign results
+
+# Always start the reset thread
 reset_daily_counts_at_midnight()
 
 # Data models
@@ -3802,14 +3806,17 @@ if __name__ == "__main__":
         logger.error(f"Failed to initialize database: {e}")
         exit(1)
     
-    # Load initial data (kept for compatibility)
-    load_projects_from_file()
-    load_campaigns_from_file()
-    load_daily_counts()
-    load_campaign_results_from_file()
+    # Load initial data (only if not using database)
+    if os.getenv('USE_DATABASE') != 'true':
+        load_projects_from_file()
+        load_campaigns_from_file()
+        load_daily_counts()
+        load_campaign_results_from_file()
+        load_profiles_from_file()
+    
+    # Always load AI keys and service account (still file-based)
     load_ai_keys()
     load_admin_service_account()
-    load_profiles_from_file()
     
     # Start the daily reset thread
     reset_daily_counts_at_midnight()

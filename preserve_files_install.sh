@@ -62,13 +62,30 @@ cd /tmp  # Safe directory for PostgreSQL operations
 sudo -u postgres psql -c "DROP DATABASE IF EXISTS firebase_manager;" 2>/dev/null || true
 sudo -u postgres psql -c "DROP USER IF EXISTS emedia;" 2>/dev/null || true
 
-# Create fresh user and database
-sudo -u postgres psql -c "CREATE USER emedia WITH PASSWORD 'Batata010..++';"
+# Create fresh user and database with full permissions
+sudo -u postgres psql -c "CREATE USER emedia WITH PASSWORD 'Batata010..++' CREATEDB SUPERUSER;"
 sudo -u postgres psql -c "CREATE DATABASE firebase_manager OWNER emedia;"
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE firebase_manager TO emedia;"
-sudo -u postgres psql -c "ALTER USER emedia CREATEDB SUPERUSER;"
+
+# Ensure all schema permissions
+sudo -u postgres psql -d firebase_manager << EOF
+GRANT ALL ON SCHEMA public TO emedia;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO emedia;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO emedia;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO emedia;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO emedia;
+EOF
 
 echo "✅ PostgreSQL database created successfully"
+
+# Test database connection with the new user
+echo "🧪 Testing database connection as emedia user..."
+if PGPASSWORD='Batata010..++' psql -h localhost -U emedia -d firebase_manager -c "SELECT version();" > /dev/null 2>&1; then
+    echo "✅ Database connection test successful"
+else
+    echo "❌ Database connection test failed"
+    exit 1
+fi
 
 # Return to application directory
 cd $APP_DIR
@@ -82,7 +99,7 @@ pip install fastapi uvicorn firebase-admin pyrebase4 python-dotenv google-auth r
 
 # Create environment file for PostgreSQL
 echo "⚙️ Creating PostgreSQL environment configuration..."
-cat > .env << EOF
+cat > $APP_DIR/.env << EOF
 # Firebase Manager Professional Configuration - PostgreSQL
 USE_DATABASE=true
 USE_JSON_FILES=false
@@ -102,7 +119,7 @@ EOF
 
 # Create frontend environment with IPv4
 echo "🌐 Creating frontend environment with IPv4..."
-cat > .env.local << EOF
+cat > $APP_DIR/.env.local << EOF
 # Frontend Environment - IPv4: $SERVER_IP
 VITE_API_BASE_URL=http://$SERVER_IP
 VITE_SERVER_IP=$SERVER_IP
@@ -148,6 +165,7 @@ User=www-data
 Group=www-data
 WorkingDirectory=$APP_DIR
 Environment=PATH=$APP_DIR/venv/bin
+EnvironmentFile=$APP_DIR/.env
 ExecStart=$APP_DIR/venv/bin/python -m src.utils.firebaseBackend
 Restart=always
 RestartSec=10
