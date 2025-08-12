@@ -256,6 +256,9 @@ print_info "Setting up database tables and admin user..."
 cd $APP_DIR
 sudo -u $SERVICE_USER $APP_DIR/venv/bin/python setup_database.py
 
+# Remove the setup script after use
+rm -f setup_database.py
+
 # Create environment configuration
 print_info "Creating environment configuration..."
 cat > $APP_DIR/.env << EOF
@@ -271,6 +274,7 @@ DB_URL=postgresql://$DB_USER:$DB_PASSWORD@localhost:5432/$DB_NAME
 BACKEND_PORT=8000
 LOG_LEVEL=INFO
 ENVIRONMENT=production
+SERVER_IP=\$(curl -s ifconfig.me || echo "localhost")
 EOF
 
 chown $SERVICE_USER:$SERVICE_GROUP $APP_DIR/.env
@@ -373,6 +377,13 @@ rm -f /etc/nginx/sites-enabled/default
 print_info "Testing Nginx configuration..."
 nginx -t
 
+# Configure firewall
+print_info "Configuring firewall..."
+ufw allow 80/tcp
+ufw allow 22/tcp
+ufw --force enable
+print_success "Firewall configured - ports 80 and 22 are open"
+
 # Start and enable services
 print_info "Starting services..."
 systemctl daemon-reload
@@ -396,6 +407,10 @@ else
     journalctl -u firebase-manager --no-pager -l --since "3 minutes ago" | tail -20
 fi
 
+# Get server IP
+SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || echo "localhost")
+print_info "Server IP detected: $SERVER_IP"
+
 # Test if frontend is accessible
 print_info "Testing frontend..."
 if curl -s http://localhost/ | grep -q "Firebase Manager"; then
@@ -405,9 +420,13 @@ else
 fi
 
 # Create status script
-cat > $APP_DIR/status.sh << 'EOF'
+cat > $APP_DIR/status.sh << EOF
 #!/bin/bash
 echo "=== Firebase Manager Professional Status ==="
+echo ""
+echo "Server Information:"
+echo "Server IP: \$(curl -s ifconfig.me 2>/dev/null || echo "localhost")"
+echo "Application Directory: $APP_DIR"
 echo ""
 echo "Backend Service:"
 systemctl status firebase-manager --no-pager -l
@@ -441,8 +460,9 @@ echo -e "${YELLOW}Important Information:${NC}"
 echo -e "  • Application Directory: ${APP_DIR}"
 echo -e "  • Service User: ${SERVICE_USER}"
 echo -e "  • Database: ${DB_NAME} (User: ${DB_USER})"
-echo -e "  • Backend URL: http://localhost:8000"
-echo -e "  • Frontend URL: http://localhost"
+echo -e "  • Backend URL: http://${SERVER_IP}:8000"
+echo -e "  • Frontend URL: http://${SERVER_IP}"
+echo -e "  • Server IP: ${SERVER_IP}"
 echo ""
 echo -e "${YELLOW}Default Admin Account:${NC}"
 echo -e "  • Username: admin"
