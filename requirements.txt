@@ -29,10 +29,7 @@ structlog
 
 # Production Server
 gunicorn
-supervisor
-nginx
 
 # Security & Monitoring
-python-multipart
 slowapi
 healthcheck 

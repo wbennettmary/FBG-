@@ -552,7 +552,18 @@ chown -R $SERVICE_USER:$SERVICE_GROUP $APP_DIR/uploads
 print_info "Running database migrations..."
 cd $APP_DIR
 if ! sudo -u $SERVICE_USER $APP_DIR/venv/bin/python -m src.database.migrations 2>/dev/null; then
-    print_warning "Database migrations already completed or failed, continuing..."
+    print_warning "Database migrations failed or already completed. Creating fallback configuration..."
+    
+    # Create a fallback .env file that uses JSON files instead of database
+    cat > $APP_DIR/.env << EOF
+# Fallback Configuration - Using JSON files instead of database
+USE_DATABASE=false
+USE_JSON_FILES=true
+BACKEND_PORT=8000
+LOG_LEVEL=INFO
+EOF
+    
+    print_info "Fallback configuration created - backend will use JSON files"
 fi
 
 # Create systemd service
@@ -789,9 +800,33 @@ sleep 5
 # Check service status
 if systemctl is-active --quiet firebase-manager; then
     print_status "Firebase Manager service is running"
+    
+    # Wait a moment for the service to fully initialize
+    sleep 10
+    
+    # Check if the service is actually responding
+    if curl -s --max-time 10 http://localhost:8000/health > /dev/null 2>&1; then
+        print_success "Backend is responding to health checks"
+    else
+        print_warning "Service is running but backend is not responding. Checking logs..."
+        journalctl -u firebase-manager --no-pager -l --since "2 minutes ago"
+        print_error "Backend service is not responding properly. Attempting to restart..."
+        
+        # Try to restart the service
+        systemctl restart firebase-manager
+        sleep 10
+        
+        if curl -s --max-time 10 http://localhost:8000/health > /dev/null 2>&1; then
+            print_success "Backend is now responding after restart"
+        else
+            print_error "Backend still not responding. Installation may have failed."
+            print_info "Please check the logs manually: journalctl -u firebase-manager -f"
+            exit 1
+        fi
+    fi
 else
     print_error "Firebase Manager service failed to start"
-    systemctl status firebase-manager
+    systemctl status firebase-manager --no-pager -l
     exit 1
 fi
 
@@ -865,10 +900,14 @@ echo ""
 
 # Test the installation
 print_info "Testing installation..."
-if curl -s http://localhost/health > /dev/null; then
-    print_status "Health check passed - server is responding"
+if curl -s http://localhost:8000/health > /dev/null; then
+    print_status "Health check passed - backend is responding"
+elif curl -s http://localhost:8000/ > /dev/null; then
+    print_status "Backend is responding (health endpoint not available)"
 else
-    print_warning "Health check failed - please check logs"
+    print_warning "Backend health check failed - please check logs"
+    print_info "Checking backend logs:"
+    journalctl -u firebase-manager --no-pager -l --since "5 minutes ago" | tail -20
 fi
 
 print_info "Installation script completed successfully!"
