@@ -145,12 +145,41 @@ chown -R www-data:www-data .
 npm install
 npm run build
 
-# Verify frontend build
+# Verify frontend build exists and has content
 if [ ! -f "dist/index.html" ]; then
     echo "❌ Frontend build failed - index.html not found"
+    ls -la dist/ || echo "dist directory doesn't exist"
     exit 1
 fi
-echo "✅ Frontend build verified - index.html found"
+
+# Check if index.html has actual content (not empty)
+if [ ! -s "dist/index.html" ]; then
+    echo "❌ Frontend build failed - index.html is empty"
+    exit 1
+fi
+
+# Check if it contains React app content
+if ! grep -q "Firebase" "dist/index.html" && ! grep -q "react" "dist/index.html" && ! grep -q "app" "dist/index.html"; then
+    echo "⚠️ Frontend build may not contain app content"
+    echo "Content preview:"
+    head -10 "dist/index.html"
+fi
+
+echo "✅ Frontend build verified - index.html found and has content"
+
+# Copy built files to nginx document root with proper permissions
+echo "📁 Deploying frontend files to nginx document root..."
+rm -rf /var/www/html/*
+cp -r dist/* /var/www/html/
+chown -R www-data:www-data /var/www/html/
+chmod -R 755 /var/www/html/
+
+# Verify deployment
+if [ ! -f "/var/www/html/index.html" ]; then
+    echo "❌ Frontend deployment failed - files not copied to nginx root"
+    exit 1
+fi
+echo "✅ Frontend files deployed to /var/www/html/"
 
 # Create systemd service
 echo "🔧 Creating systemd service..."
@@ -181,10 +210,11 @@ server {
     listen 80;
     server_name $SERVER_IP _;
     
-    # Frontend
+    # Frontend - serve from standard nginx document root
     location / {
-        root $APP_DIR/dist;
+        root /var/www/html;
         try_files \$uri \$uri/ /index.html;
+        index index.html;
     }
     
     # Backend - ALL endpoints work through port 80
@@ -219,11 +249,12 @@ rm -f /etc/nginx/sites-available/default
 
 # Ensure our frontend files are in the right place
 echo "📁 Ensuring frontend files are properly placed..."
-if [ ! -f "$APP_DIR/dist/index.html" ]; then
-    echo "❌ Frontend files missing at $APP_DIR/dist/"
-    ls -la "$APP_DIR/"
+if [ ! -f "/var/www/html/index.html" ]; then
+    echo "❌ Frontend files missing at /var/www/html/"
+    ls -la "/var/www/html/" || echo "/var/www/html/ doesn't exist"
     exit 1
 fi
+echo "✅ Frontend files confirmed at /var/www/html/"
 
 # Test Nginx config
 echo "🧪 Testing Nginx configuration..."
@@ -329,12 +360,44 @@ fi
 
 # Test frontend serving (ensure not nginx default page)
 echo "Testing frontend serving..."
-RESPONSE=$(curl -s --max-time 10 http://$SERVER_IP/ | head -1)
-if [[ "$RESPONSE" == *"<!DOCTYPE html>"* ]] && ! [[ "$RESPONSE" == *"nginx"* ]]; then
+RESPONSE=$(curl -s --max-time 10 http://$SERVER_IP/)
+if [[ "$RESPONSE" == *"Welcome to nginx"* ]]; then
+    echo "❌ CRITICAL: Still serving nginx default page!"
+    echo "Diagnosing issue..."
+    
+    # Check what's actually in /var/www/html/
+    echo "Files in /var/www/html/:"
+    ls -la /var/www/html/ || echo "Directory doesn't exist"
+    
+    # Check nginx configuration
+    echo "Active nginx sites:"
+    ls -la /etc/nginx/sites-enabled/
+    
+    # Check if our site is actually enabled
+    if [ -f "/etc/nginx/sites-enabled/firebase-manager" ]; then
+        echo "✅ firebase-manager site is enabled"
+    else
+        echo "❌ firebase-manager site NOT enabled"
+    fi
+    
+    # Restart nginx and try again
+    echo "🔄 Restarting nginx..."
+    systemctl restart nginx
+    sleep 5
+    
+    # Test again
+    RESPONSE2=$(curl -s --max-time 10 http://$SERVER_IP/)
+    if [[ "$RESPONSE2" == *"Welcome to nginx"* ]]; then
+        echo "❌ Still nginx default after restart - INSTALLATION FAILED"
+        exit 1
+    else
+        echo "✅ Fixed after nginx restart"
+    fi
+elif [[ "$RESPONSE" == *"<!DOCTYPE html>"* ]] || [[ "$RESPONSE" == *"Firebase"* ]] || [[ "$RESPONSE" == *"Login"* ]]; then
     echo "✅ Frontend app: SERVING CORRECTLY"
 else
-    echo "❌ Frontend: May be serving nginx default page"
-    echo "Response: $RESPONSE"
+    echo "❌ Frontend: Unexpected response"
+    echo "Response preview: ${RESPONSE:0:200}"
 fi
 
 echo ""
