@@ -28,6 +28,14 @@ import requests
 from google.oauth2 import service_account
 from google.auth.transport.requests import AuthorizedSession
 
+# CRITICAL FIX: Load environment variables
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # Load .env file
+    print("✅ Environment variables loaded successfully")
+except ImportError:
+    print("⚠️ python-dotenv not available, using system environment variables")
+
 # Google Cloud imports for project deletion
 try:
     from google.cloud import resourcemanager
@@ -42,6 +50,11 @@ from fastapi import Response
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Log environment configuration
+logger.info(f"Environment: {os.getenv('ENVIRONMENT', 'development')}")
+logger.info(f"Database URL configured: {'DB_URL' in os.environ}")
+logger.info(f"Use Database: {os.getenv('USE_DATABASE', 'false')}")
 
 # Log Google Cloud availability
 if not GOOGLE_CLOUD_AVAILABLE:
@@ -870,17 +883,71 @@ def get_daily_count(project_id: str) -> int:
 
 @app.get("/")
 async def root():
-    return {"message": "Firebase Email Campaign Backend v2.0", "status": "running"}
+    """Root endpoint for basic connectivity test"""
+    return {
+        "message": "Firebase Manager Professional Backend",
+        "status": "running",
+        "timestamp": datetime.now().isoformat(),
+        "version": "2.0.0",
+        "environment": os.getenv('ENVIRONMENT', 'development')
+    }
 
 @app.get("/health")
 async def health_check():
-    return {
-        "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
-        "projects_connected": len(firebase_apps),
-        "active_campaigns": len(active_campaigns),
-        "version": "2.0.0"
-    }
+    """Health check endpoint to verify backend is running and database is connected"""
+    try:
+        # Check if we can load environment variables
+        env_status = {
+            "environment": os.getenv('ENVIRONMENT', 'development'),
+            "use_database": os.getenv('USE_DATABASE', 'false'),
+            "db_url_configured": 'DB_URL' in os.environ,
+            "backend_port": os.getenv('BACKEND_PORT', '8000')
+        }
+        
+        # Check database connection if configured
+        db_status = {"connected": False, "error": None}
+        if os.getenv('USE_DATABASE') == 'true' and os.getenv('DB_URL'):
+            try:
+                import psycopg2
+                from urllib.parse import urlparse
+                
+                db_url = os.getenv('DB_URL')
+                parsed = urlparse(db_url)
+                
+                conn = psycopg2.connect(
+                    host=parsed.hostname,
+                    port=parsed.port or 5432,
+                    database=parsed.path[1:],
+                    user=parsed.username,
+                    password=parsed.password
+                )
+                
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+                cursor.close()
+                conn.close()
+                
+                db_status = {"connected": True, "error": None}
+            except Exception as e:
+                db_status = {"connected": False, "error": str(e)}
+        
+        return {
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "environment": env_status,
+            "database": db_status,
+            "services": {
+                "fastapi": "running",
+                "postgresql": "connected" if db_status["connected"] else "disconnected"
+            }
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "timestamp": datetime.now().isoformat(),
+            "error": str(e)
+        }
 
 @app.post("/projects")
 async def add_project(project: ProjectCreate, request: Request):

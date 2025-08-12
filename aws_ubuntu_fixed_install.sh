@@ -132,6 +132,22 @@ sudo -u $SERVICE_USER $APP_DIR/venv/bin/pip install fastapi uvicorn firebase-adm
 # Build frontend
 print_info "Building frontend..."
 sudo -u $SERVICE_USER npm install
+
+# Create frontend environment file for AWS server
+print_info "Creating frontend environment configuration..."
+SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || echo "localhost")
+cat > $APP_DIR/.env.local << EOF
+# Frontend Environment Configuration for AWS Ubuntu Server
+VITE_API_BASE_URL=http://${SERVER_IP}:8000
+VITE_SERVER_IP=${SERVER_IP}
+VITE_BACKEND_PORT=8000
+VITE_ENVIRONMENT=production
+EOF
+
+chown $SERVICE_USER:$SERVICE_GROUP $APP_DIR/.env.local
+
+# Build frontend with environment variables
+print_info "Building frontend with AWS server configuration..."
 sudo -u $SERVICE_USER npm run build
 
 # Create database models and tables
