@@ -1,4 +1,4 @@
-// Working API Client for Firebase Manager
+// Working API Client for Firebase Manager - IPv4 Consistent
 // This replaces all the broken fetch calls with a working solution
 
 class APIClient {
@@ -10,13 +10,24 @@ class APIClient {
     const currentHost = window.location.hostname;
     const currentPort = window.location.port || '80';
     
+    // ALWAYS use IPv4 - no IPv6 addresses
+    let serverIP = currentHost;
+    
+    // If we have an IPv6 address, extract the IPv4 part
+    if (currentHost.includes(':')) {
+      // This is an IPv6 address, we need to get the IPv4
+      // For now, use localhost:8000 as fallback
+      serverIP = 'localhost';
+      console.warn('⚠️ IPv6 address detected, using localhost:8000 as fallback');
+    }
+    
     // If we're on the server itself, use localhost:8000 for backend
     // If we're accessing remotely, use the same hostname with port 8000
-    if (currentHost === 'localhost' || currentHost === '127.0.0.1') {
+    if (serverIP === 'localhost' || serverIP === '127.0.0.1') {
       this.baseURL = 'http://localhost:8000';
     } else {
       // Remote server - use same hostname but port 8000
-      this.baseURL = `http://${currentHost}:8000`;
+      this.baseURL = `http://${serverIP}:8000`;
     }
     
     this.timeout = 30000;
@@ -24,8 +35,10 @@ class APIClient {
     console.log('🌐 API Client initialized with:', {
       currentHost,
       currentPort,
+      serverIP,
       baseURL: this.baseURL,
-      userAgent: navigator.userAgent
+      userAgent: navigator.userAgent,
+      isIPv6: currentHost.includes(':')
     });
   }
 
@@ -144,6 +157,16 @@ class APIClient {
   // Test database connection
   async testDatabase() {
     return this.makeRequest('/auth/test-db');
+  }
+
+  // Get current configuration
+  getCurrentConfig() {
+    return {
+      baseURL: this.baseURL,
+      currentHost: window.location.hostname,
+      isIPv6: window.location.hostname.includes(':'),
+      userAgent: navigator.userAgent
+    };
   }
 }
 
