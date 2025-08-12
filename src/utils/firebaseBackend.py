@@ -146,7 +146,7 @@ def init_database():
                 VALUES (%s, %s, %s, %s, %s)
                 RETURNING id
             ''', ('admin', 'admin@firebase-manager.com', 
-                  '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj/RK.s5u.Ge', 
+                  'admin', 
                   'admin', True))
             
             admin_id = cursor.fetchone()['id']
@@ -462,8 +462,8 @@ def auth_login(body: Dict[str, str] = Body(...)):
             conn.close()
             raise HTTPException(status_code=401, detail="Invalid credentials")
         
-        # Check password
-        if user_data['password_hash'] != _hash_password(password):
+        # Check password (plain text - no hashing)
+        if user_data['password_hash'] != password:
             cursor.close()
             conn.close()
             raise HTTPException(status_code=401, detail="Invalid credentials")
