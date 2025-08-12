@@ -129,6 +129,11 @@ print_status "Installing Python dependencies..."
 pip install --upgrade pip
 pip install fastapi uvicorn psycopg2-binary python-dotenv
 
+# Create Python module structure
+print_status "Setting up Python module structure..."
+touch src/__init__.py
+touch src/utils/__init__.py
+
 # Create frontend environment file
 print_status "Creating frontend environment configuration..."
 cat > .env.local << EOF
@@ -216,7 +221,7 @@ Group=www-data
 WorkingDirectory=$APP_DIR
 Environment=PATH=$APP_DIR/venv/bin
 EnvironmentFile=$APP_DIR/.env
-ExecStart=$APP_DIR/venv/bin/python -m src.utils.firebaseBackend
+ExecStart=$APP_DIR/venv/bin/python src/utils/firebaseBackend.py
 Restart=always
 RestartSec=3
 
@@ -227,6 +232,23 @@ EOF
 # Set correct permissions
 chown -R www-data:www-data $APP_DIR
 chmod +x $APP_DIR/venv/bin/python
+
+# Test backend before creating service
+print_status "Testing backend startup..."
+source venv/bin/activate
+timeout 10 python3 src/utils/firebaseBackend.py &
+BACKEND_PID=$!
+sleep 5
+
+if kill -0 $BACKEND_PID 2>/dev/null; then
+    print_success "Backend test successful"
+    kill $BACKEND_PID 2>/dev/null || true
+else
+    print_error "Backend failed to start during test"
+    echo "Backend logs:"
+    python3 src/utils/firebaseBackend.py 2>&1 | head -20
+    exit 1
+fi
 
 # Reload systemd and start services
 print_status "Starting services..."
