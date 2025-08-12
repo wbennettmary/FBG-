@@ -86,15 +86,104 @@ apt install -y \
     lsb-release \
     build-essential \
     libpq-dev \
-    python3-dev \
-    nodejs \
-    npm
+    python3-dev
 
-# Install Node.js 18+ if not available
-if ! command -v node &> /dev/null || [[ $(node --version | cut -d'v' -f2 | cut -d'.' -f1) -lt 18 ]]; then
-    print_info "Installing Node.js 18+..."
-    curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+# Check Ubuntu version for specific handling
+UBUNTU_VERSION=$(lsb_release -rs)
+print_info "Detected Ubuntu version: $UBUNTU_VERSION"
+
+# Clean up any existing Node.js installations to prevent conflicts
+print_info "Cleaning up existing Node.js installations..."
+
+# Remove all Node.js related packages to prevent conflicts
+apt remove -y nodejs npm libnode-dev nodejs-legacy || true
+apt remove -y nodejs-doc || true
+
+# Ubuntu 22.04 specific cleanup
+if [[ "$UBUNTU_VERSION" == "22.04" ]]; then
+    print_info "Ubuntu 22.04 detected - applying specific cleanup..."
+    apt remove -y libnode-dev:amd64 || true
+    apt autoremove -y
+    apt --fix-broken install -y || true
+else
+    apt autoremove -y
+fi
+
+# Fix any broken packages
+print_info "Fixing broken packages..."
+apt --fix-broken install -y || true
+
+# Clean package cache
+print_info "Cleaning package cache..."
+apt clean
+apt autoclean
+
+# Update package list
+apt update
+
+# Additional cleanup for dpkg issues
+print_info "Checking for dpkg issues..."
+if dpkg --audit | grep -q "broken"; then
+    print_warning "Detected broken packages. Attempting to fix..."
+    dpkg --configure -a
+    apt --fix-broken install -y || true
+fi
+
+# Install Node.js 18+ from NodeSource (includes npm)
+print_info "Installing Node.js 18+ from NodeSource..."
+
+# Add NodeSource repository
+curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+
+# Force clean install of Node.js
+print_info "Installing Node.js 18+..."
+apt update
+
+# Install Node.js with force overwrite to resolve conflicts
+print_info "Installing Node.js with conflict resolution..."
+apt install -y nodejs --allow-downgrades --allow-overwrite
+
+# If still having issues, try to resolve the specific libnode-dev conflict
+if ! command -v node &> /dev/null; then
+    print_warning "Node.js installation had conflicts. Resolving..."
+    
+    # Remove conflicting package completely
+    apt remove -y libnode-dev || true
+    apt autoremove -y
+    
+    # Try installation again
     apt install -y nodejs
+fi
+
+# Verify Node.js installation
+print_info "Verifying Node.js installation..."
+if command -v node &> /dev/null && command -v npm &> /dev/null; then
+    print_success "Node.js $(node --version) and npm $(npm --version) installed successfully"
+else
+    print_error "Node.js installation failed. Trying alternative method..."
+    
+    # Alternative installation method
+    print_info "Trying alternative installation method..."
+    
+    # Remove all conflicting packages
+    apt remove -y libnode-dev nodejs npm || true
+    apt autoremove -y
+    apt --fix-broken install -y || true
+    
+    # Try to install from NodeSource again
+    curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+    apt update
+    apt install -y nodejs
+    
+    if command -v node &> /dev/null && command -v npm &> /dev/null; then
+        print_success "Node.js installed successfully via alternative method"
+    else
+        print_error "Node.js installation failed. Please install manually using:"
+        print_error "curl -fsSL https://deb.nodesource.com/setup_18.x | sudo bash -"
+        print_error "sudo apt install -y nodejs"
+        print_error "Then run this script again."
+        exit 1
+    fi
 fi
 
 # Start and enable services
