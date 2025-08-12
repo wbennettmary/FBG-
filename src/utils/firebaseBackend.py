@@ -288,15 +288,80 @@ class AppUserUpdate(BaseModel):
 
 @app.post("/auth/login")
 def auth_login(body: Dict[str, str] = Body(...)):
-    data = load_app_users()
     username = (body.get('username') or '').strip()
     password = body.get('password') or ''
+    
+    # First try to authenticate from PostgreSQL database
+    try:
+        import psycopg2
+        import os
+        
+        # Check if database is configured
+        db_url = os.getenv('DB_URL')
+        if db_url:
+            # Parse database URL
+            from urllib.parse import urlparse
+            parsed = urlparse(db_url)
+            
+            conn = psycopg2.connect(
+                host=parsed.hostname,
+                port=parsed.port or 5432,
+                database=parsed.path[1:],
+                user=parsed.username,
+                password=parsed.password
+            )
+            
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT u.username, u.password_hash, u.role, u.id 
+                FROM app_users u 
+                WHERE u.username = %s AND u.is_active = TRUE
+            """, (username,))
+            
+            user_data = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            if user_data and user_data[1] == _hash_password(password):
+                # Get permissions from database
+                conn = psycopg2.connect(
+                    host=parsed.hostname,
+                    port=parsed.port or 5432,
+                    database=parsed.path[1:],
+                    user=parsed.username,
+                    password=parsed.password
+                )
+                
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT permission_name 
+                    FROM user_permissions 
+                    WHERE user_id = %s AND is_granted = TRUE
+                """, (user_data[3],))
+                
+                permissions = [row[0] for row in cursor.fetchall()]
+                cursor.close()
+                conn.close()
+                
+                logger.info(f"User {username} authenticated from database with {len(permissions)} permissions")
+                return {
+                    "success": True, 
+                    "username": username, 
+                    "role": user_data[2], 
+                    "permissions": permissions
+                }
+    except Exception as e:
+        logger.warning(f"Database authentication failed for {username}: {e}")
+    
+    # Fallback to JSON file authentication
+    data = load_app_users()
     user = next((u for u in data.get('users', []) if u.get('username') == username), None)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if user.get('password_hash') != _hash_password(password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     perms = compute_effective_permissions(username)
+    logger.info(f"User {username} authenticated from JSON file")
     return {"success": True, "username": username, "role": user.get('role', 'member'), "permissions": perms}
 
 @app.get("/app-users")
@@ -372,6 +437,61 @@ def update_app_user(username: str, update: dict, _: None = Depends(verify_basic_
 @app.get("/role-permissions")
 def get_role_permissions(_: None = Depends(verify_basic_admin)):
     return load_role_permissions()
+
+@app.get("/auth/test-db")
+def test_database_connection():
+    """Test database connection and show admin user info"""
+    try:
+        import psycopg2
+        import os
+        
+        db_url = os.getenv('DB_URL')
+        if not db_url:
+            return {"status": "error", "message": "No database URL configured"}
+        
+        from urllib.parse import urlparse
+        parsed = urlparse(db_url)
+        
+        conn = psycopg2.connect(
+            host=parsed.hostname,
+            port=parsed.port or 5432,
+            database=parsed.path[1:],
+            user=parsed.username,
+            password=parsed.password
+        )
+        
+        cursor = conn.cursor()
+        
+        # Check if admin user exists
+        cursor.execute("SELECT username, role, is_active FROM app_users WHERE username = 'admin'")
+        admin_user = cursor.fetchone()
+        
+        # Count total users
+        cursor.execute("SELECT COUNT(*) FROM app_users")
+        total_users = cursor.fetchone()[0]
+        
+        # Count permissions
+        cursor.execute("SELECT COUNT(*) FROM user_permissions")
+        total_permissions = cursor.fetchone()[0]
+        
+        cursor.close()
+        conn.close()
+        
+        return {
+            "status": "success",
+            "database": "connected",
+            "admin_user": {
+                "exists": admin_user is not None,
+                "username": admin_user[0] if admin_user else None,
+                "role": admin_user[1] if admin_user else None,
+                "active": admin_user[2] if admin_user else None
+            },
+            "total_users": total_users,
+            "total_permissions": total_permissions
+        }
+        
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.put("/role-permissions")
 def put_role_permissions(perms: Dict[str, Dict[str, bool]], _: None = Depends(verify_basic_admin)):
