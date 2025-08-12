@@ -19,6 +19,7 @@ DB_NAME="firebase_manager"
 APP_DIR="/var/www/firebase-manager"
 SERVICE_USER="firebase"
 SERVICE_GROUP="firebase"
+REPO_URL="https://github.com/wbennettmary/FBG-.git"
 
 echo -e "${BLUE}🚀 Firebase Manager Enterprise Server Installation${NC}"
 echo -e "${BLUE}================================================${NC}"
@@ -63,6 +64,45 @@ if [[ "$UBUNTU_VERSION" != "20.04" && "$UBUNTU_VERSION" != "22.04" && "$UBUNTU_V
 fi
 
 print_info "Starting installation on Ubuntu $UBUNTU_VERSION..."
+
+# COMPLETE CLEANUP - Remove any existing installation
+print_info "🧹 Performing complete cleanup of any existing installation..."
+
+# Stop and disable all services
+print_info "Stopping existing services..."
+systemctl stop firebase-manager 2>/dev/null || true
+systemctl stop nginx 2>/dev/null || true
+systemctl stop postgresql 2>/dev/null || true
+systemctl stop redis-server 2>/dev/null || true
+systemctl stop supervisor 2>/dev/null || true
+
+# Disable services
+print_info "Disabling existing services..."
+systemctl disable firebase-manager 2>/dev/null || true
+systemctl disable nginx 2>/dev/null || true
+systemctl disable postgresql 2>/dev/null || true
+systemctl disable redis-server 2>/dev/null || true
+systemctl disable supervisor 2>/dev/null || true
+
+# Remove application files
+print_info "Removing application files..."
+rm -rf /var/www/firebase-manager 2>/dev/null || true
+rm -rf /root/FBG- 2>/dev/null || true
+rm -rf /home/firebase 2>/dev/null || true
+
+# Remove configuration files
+print_info "Removing configuration files..."
+rm -f /etc/nginx/sites-available/firebase-manager 2>/dev/null || true
+rm -f /etc/nginx/sites-enabled/firebase-manager 2>/dev/null || true
+rm -f /etc/supervisor/conf.d/firebase-manager.conf 2>/dev/null || true
+rm -f /etc/systemd/system/firebase-manager.service 2>/dev/null || true
+
+# Reset systemd
+print_info "Resetting systemd..."
+systemctl daemon-reload 2>/dev/null || true
+systemctl reset-failed 2>/dev/null || true
+
+print_success "Cleanup completed successfully!"
 
 # Update system
 print_info "Updating system packages..."
@@ -215,6 +255,14 @@ systemctl enable redis-server
 
 # Configure PostgreSQL
 print_info "Configuring PostgreSQL..."
+
+# Clean up existing database and user
+print_info "Cleaning up existing PostgreSQL data..."
+sudo -u postgres psql -c "DROP DATABASE IF EXISTS $DB_NAME;" 2>/dev/null || true
+sudo -u postgres psql -c "DROP USER IF EXISTS $DB_USER;" 2>/dev/null || true
+
+# Create fresh database and user
+print_info "Creating fresh database and user..."
 sudo -u postgres psql -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASSWORD';"
 sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;"
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;"
@@ -241,8 +289,10 @@ if [ -d ".git" ]; then
 else
     print_info "Cloning application from repository..."
     cd $APP_DIR
-    git clone https://github.com/your-repo/firebase-manager.git . || {
-        print_warning "Could not clone repository. Please copy files manually to $APP_DIR"
+    git clone $REPO_URL . || {
+        print_error "Could not clone repository from $REPO_URL"
+        print_error "Please ensure the repository is accessible or copy files manually to $APP_DIR"
+        exit 1
     }
     chown -R $SERVICE_USER:$SERVICE_GROUP $APP_DIR
 fi
@@ -342,6 +392,39 @@ else
     exit 1
 fi
 
+# Run database migrations
+print_info "Running database migrations..."
+cd $APP_DIR
+if sudo -u $SERVICE_USER $APP_DIR/venv/bin/python -m src.database.migrations; then
+    print_success "Database migrations completed successfully"
+else
+    print_error "Database migrations failed"
+    print_info "Attempting to create tables manually..."
+    
+    # Create basic tables if migrations fail
+    sudo -u $SERVICE_USER $APP_DIR/venv/bin/python -c "
+import asyncio
+import sys
+sys.path.append('$APP_DIR')
+from src.database.connection import db_manager
+from src.database.models import Base
+from sqlalchemy import text
+
+async def create_basic_tables():
+    try:
+        await db_manager.initialize()
+        async with db_manager.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        print('Basic tables created successfully')
+    except Exception as e:
+        print(f'Error creating tables: {e}')
+    finally:
+        await db_manager.close()
+
+asyncio.run(create_basic_tables())
+"
+fi
+
 # Create environment file
 print_info "Creating environment configuration..."
 cat > $APP_DIR/.env << EOF
@@ -402,10 +485,12 @@ chmod 600 $APP_DIR/.env
 mkdir -p $APP_DIR/uploads
 chown -R $SERVICE_USER:$SERVICE_GROUP $APP_DIR/uploads
 
-# Run database migrations
+# Run database migrations (if not already done)
 print_info "Running database migrations..."
 cd $APP_DIR
-sudo -u $SERVICE_USER $APP_DIR/venv/bin/python -m src.database.migrations
+if ! sudo -u $SERVICE_USER $APP_DIR/venv/bin/python -m src.database.migrations 2>/dev/null; then
+    print_warning "Database migrations already completed or failed, continuing..."
+fi
 
 # Create systemd service
 print_info "Creating systemd service..."
