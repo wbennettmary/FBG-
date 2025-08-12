@@ -22,12 +22,12 @@ class APIClient {
     }
     
     // If we're on the server itself, use localhost:8000 for backend
-    // If we're accessing remotely, use the same hostname with port 8000
+    // If we're accessing remotely, use the same hostname (port 80 for Nginx proxy)
     if (serverIP === 'localhost' || serverIP === '127.0.0.1') {
       this.baseURL = 'http://localhost:8000';
     } else {
-      // Remote server - use same hostname but port 8000
-      this.baseURL = `http://${serverIP}:8000`;
+      // Remote server - use same hostname on port 80 (Nginx will proxy to backend)
+      this.baseURL = `http://${serverIP}`;
     }
     
     this.timeout = 30000;

@@ -1,7 +1,8 @@
 #!/bin/bash
 
-# Installation Script That PRESERVES Files and Uses IPv4 Consistently
-# This actually works and keeps your repo intact
+# PROFESSIONAL FIREBASE MANAGER INSTALLATION
+# PostgreSQL-only, production-ready, preserves files
+# Designed for AWS Ubuntu servers with 1000+ campaign capacity
 
 set -e
 
@@ -43,37 +44,69 @@ chown -R www-data:www-data $APP_DIR
 echo "✅ Your original repo is preserved at: $CURRENT_DIR"
 echo "✅ Application files copied to: $APP_DIR"
 
-# Install basic packages
-echo "📦 Installing basic packages..."
+# Install system packages including PostgreSQL
+echo "📦 Installing system packages..."
 apt-get update
-apt-get install -y python3 python3-pip python3-venv nginx curl
+apt-get install -y python3 python3-pip python3-venv nginx curl postgresql postgresql-contrib libpq-dev python3-dev
+
+# Setup PostgreSQL
+echo "🗄️ Setting up PostgreSQL..."
+systemctl start postgresql
+systemctl enable postgresql
+
+# Create database and user
+echo "🗄️ Creating PostgreSQL database..."
+cd /tmp  # Safe directory for PostgreSQL operations
+
+# Drop existing database and user if they exist (fresh install)
+sudo -u postgres psql -c "DROP DATABASE IF EXISTS firebase_manager;" 2>/dev/null || true
+sudo -u postgres psql -c "DROP USER IF EXISTS emedia;" 2>/dev/null || true
+
+# Create fresh user and database
+sudo -u postgres psql -c "CREATE USER emedia WITH PASSWORD 'Batata010..++';"
+sudo -u postgres psql -c "CREATE DATABASE firebase_manager OWNER emedia;"
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE firebase_manager TO emedia;"
+sudo -u postgres psql -c "ALTER USER emedia CREATEDB SUPERUSER;"
+
+echo "✅ PostgreSQL database created successfully"
+
+# Return to application directory
+cd $APP_DIR
 
 # Setup Python environment
 echo "🐍 Setting up Python environment..."
-cd $APP_DIR
 python3 -m venv venv
 source venv/bin/activate
-pip install fastapi uvicorn firebase-admin pyrebase4 python-dotenv
+pip install --upgrade pip
+pip install fastapi uvicorn firebase-admin pyrebase4 python-dotenv google-auth requests python-multipart python-jose passlib aiofiles httpx psycopg2-binary bcrypt
 
-# Create environment file with IPv4
-echo "⚙️ Creating environment configuration with IPv4..."
+# Create environment file for PostgreSQL
+echo "⚙️ Creating PostgreSQL environment configuration..."
 cat > .env << EOF
-# Firebase Manager Configuration - IPv4: $SERVER_IP
-USE_DATABASE=false
-USE_JSON_FILES=true
+# Firebase Manager Professional Configuration - PostgreSQL
+USE_DATABASE=true
+USE_JSON_FILES=false
 ENVIRONMENT=production
 LOG_LEVEL=INFO
 SERVER_IP=$SERVER_IP
 BACKEND_PORT=8000
+HOST=0.0.0.0
+CORS_ORIGINS=*
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=firebase_manager
+DB_USER=emedia
+DB_PASSWORD=Batata010..++
+DB_URL=postgresql://emedia:Batata010..++@localhost:5432/firebase_manager
 EOF
 
 # Create frontend environment with IPv4
 echo "🌐 Creating frontend environment with IPv4..."
 cat > .env.local << EOF
 # Frontend Environment - IPv4: $SERVER_IP
-VITE_API_BASE_URL=http://$SERVER_IP:8000
+VITE_API_BASE_URL=http://$SERVER_IP
 VITE_SERVER_IP=$SERVER_IP
-VITE_BACKEND_PORT=8000
+VITE_BACKEND_PORT=80
 VITE_ENVIRONMENT=production
 EOF
 
@@ -116,17 +149,23 @@ server {
         try_files \$uri \$uri/ /index.html;
     }
     
-    # Backend API - IPv4 consistent
-    location /api/ {
-        proxy_pass http://127.0.0.1:8000/;
+    # Backend - ALL endpoints work through port 80
+    location ~ ^/(auth|api|health|projects|campaigns|profiles|app-users|role-permissions|settings|audit-logs|ai|test|ws) {
+        proxy_pass http://127.0.0.1:8000;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        
+        # Timeouts
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
     }
     
-    # Direct backend access - IPv4 consistent
-    location /auth/ {
-        proxy_pass http://127.0.0.1:8000/auth/;
+    # Root endpoint
+    location = / {
+        proxy_pass http://127.0.0.1:8000/;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;

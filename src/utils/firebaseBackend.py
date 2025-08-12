@@ -36,6 +36,143 @@ try:
 except ImportError:
     print("⚠️ python-dotenv not available, using system environment variables")
 
+# Database imports and connection
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from urllib.parse import urlparse
+
+# Database connection pool
+import threading
+db_connection_lock = threading.Lock()
+
+def get_db_connection():
+    """Get database connection with proper error handling"""
+    try:
+        db_url = os.getenv('DB_URL')
+        if not db_url:
+            raise Exception("Database URL not configured")
+        
+        parsed = urlparse(db_url)
+        conn = psycopg2.connect(
+            host=parsed.hostname,
+            port=parsed.port or 5432,
+            database=parsed.path[1:],
+            user=parsed.username,
+            password=parsed.password,
+            cursor_factory=RealDictCursor
+        )
+        return conn
+    except Exception as e:
+        logger.error(f"Database connection failed: {e}")
+        raise
+
+def init_database():
+    """Initialize database tables and admin user"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Create tables with proper permissions
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS app_users (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(100) UNIQUE NOT NULL,
+                email VARCHAR(255) UNIQUE,
+                password_hash VARCHAR(255) NOT NULL,
+                role VARCHAR(50) DEFAULT 'user',
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_permissions (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES app_users(id) ON DELETE CASCADE,
+                permission_name VARCHAR(100) NOT NULL,
+                is_granted BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, permission_name)
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS profiles (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                description TEXT,
+                owner_id INTEGER REFERENCES app_users(id) ON DELETE CASCADE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS projects (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                admin_email VARCHAR(255) NOT NULL,
+                service_account JSONB NOT NULL,
+                api_key VARCHAR(500) NOT NULL,
+                profile_id INTEGER REFERENCES profiles(id) ON DELETE SET NULL,
+                owner_id INTEGER REFERENCES app_users(id) ON DELETE CASCADE,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS campaigns (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+                batch_size INTEGER DEFAULT 100,
+                workers INTEGER DEFAULT 5,
+                template TEXT,
+                status VARCHAR(50) DEFAULT 'draft',
+                owner_id INTEGER REFERENCES app_users(id) ON DELETE CASCADE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Create admin user if doesn't exist
+        cursor.execute("SELECT id FROM app_users WHERE username = 'admin'")
+        if not cursor.fetchone():
+            cursor.execute('''
+                INSERT INTO app_users (username, email, password_hash, role, is_active)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id
+            ''', ('admin', 'admin@firebase-manager.com', 
+                  '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj/RK.s5u.Ge', 
+                  'admin', True))
+            
+            admin_id = cursor.fetchone()['id']
+            
+            # Add admin permissions
+            permissions = ['projects', 'users', 'campaigns', 'templates', 'ai', 'test', 
+                          'profiles', 'auditLogs', 'settings', 'smtp']
+            
+            for perm in permissions:
+                cursor.execute('''
+                    INSERT INTO user_permissions (user_id, permission_name, is_granted)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (user_id, permission_name) DO NOTHING
+                ''', (admin_id, perm, True))
+            
+            logger.info("Admin user created successfully")
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        logger.info("Database initialized successfully")
+        
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}")
+        raise
+
 # Google Cloud imports for project deletion
 try:
     from google.cloud import resourcemanager
@@ -304,78 +441,58 @@ def auth_login(body: Dict[str, str] = Body(...)):
     username = (body.get('username') or '').strip()
     password = body.get('password') or ''
     
-    # First try to authenticate from PostgreSQL database
+    if not username or not password:
+        raise HTTPException(status_code=401, detail="Username and password required")
+    
     try:
-        import psycopg2
-        import os
+        # Use database only for authentication
+        conn = get_db_connection()
+        cursor = conn.cursor()
         
-        # Check if database is configured
-        db_url = os.getenv('DB_URL')
-        if db_url:
-            # Parse database URL
-            from urllib.parse import urlparse
-            parsed = urlparse(db_url)
-            
-            conn = psycopg2.connect(
-                host=parsed.hostname,
-                port=parsed.port or 5432,
-                database=parsed.path[1:],
-                user=parsed.username,
-                password=parsed.password
-            )
-            
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT u.username, u.password_hash, u.role, u.id 
-                FROM app_users u 
-                WHERE u.username = %s AND u.is_active = TRUE
-            """, (username,))
-            
-            user_data = cursor.fetchone()
+        cursor.execute("""
+            SELECT u.username, u.password_hash, u.role, u.id 
+            FROM app_users u 
+            WHERE u.username = %s AND u.is_active = TRUE
+        """, (username,))
+        
+        user_data = cursor.fetchone()
+        
+        if not user_data:
             cursor.close()
             conn.close()
-            
-            if user_data and user_data[1] == _hash_password(password):
-                # Get permissions from database
-                conn = psycopg2.connect(
-                    host=parsed.hostname,
-                    port=parsed.port or 5432,
-                    database=parsed.path[1:],
-                    user=parsed.username,
-                    password=parsed.password
-                )
-                
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT permission_name 
-                    FROM user_permissions 
-                    WHERE user_id = %s AND is_granted = TRUE
-                """, (user_data[3],))
-                
-                permissions = [row[0] for row in cursor.fetchall()]
-                cursor.close()
-                conn.close()
-                
-                logger.info(f"User {username} authenticated from database with {len(permissions)} permissions")
-                return {
-                    "success": True, 
-                    "username": username, 
-                    "role": user_data[2], 
-                    "permissions": permissions
-                }
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        # Check password
+        if user_data['password_hash'] != _hash_password(password):
+            cursor.close()
+            conn.close()
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        # Get permissions from database
+        cursor.execute("""
+            SELECT permission_name 
+            FROM user_permissions 
+            WHERE user_id = %s AND is_granted = TRUE
+        """, (user_data['id'],))
+        
+        permissions = [row['permission_name'] for row in cursor.fetchall()]
+        
+        cursor.close()
+        conn.close()
+        
+        logger.info(f"User {username} authenticated successfully with {len(permissions)} permissions")
+        return {
+            "success": True, 
+            "username": username, 
+            "role": user_data['role'], 
+            "permissions": permissions
+        }
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.warning(f"Database authentication failed for {username}: {e}")
-    
-    # Fallback to JSON file authentication
-    data = load_app_users()
-    user = next((u for u in data.get('users', []) if u.get('username') == username), None)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    if user.get('password_hash') != _hash_password(password):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    perms = compute_effective_permissions(username)
-    logger.info(f"User {username} authenticated from JSON file")
-    return {"success": True, "username": username, "role": user.get('role', 'member'), "permissions": perms}
+        logger.error(f"Authentication error for {username}: {e}")
+        raise HTTPException(status_code=500, detail="Authentication service error")
 
 @app.get("/app-users")
 def list_app_users(_: None = Depends(verify_basic_admin)):
@@ -3675,8 +3792,17 @@ async def update_project(
 
 if __name__ == "__main__":
     import uvicorn
+    import os
     
-    # Load initial data
+    # Initialize database first
+    try:
+        init_database()
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+        exit(1)
+    
+    # Load initial data (kept for compatibility)
     load_projects_from_file()
     load_campaigns_from_file()
     load_daily_counts()
