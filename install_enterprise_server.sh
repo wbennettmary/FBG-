@@ -458,7 +458,7 @@ cd $APP_DIR || {
     print_error "Failed to change to application directory for migrations"
     exit 1
 }
-if sudo -u $SERVICE_USER $APP_DIR/venv/bin/python -m src.database.migrations; then
+if sudo -u $SERVICE_USER $APP_DIR/venv/bin/python -m src.database.migrations 2>/dev/null; then
     print_success "Database migrations completed successfully"
 else
     print_error "Database migrations failed"
@@ -569,7 +569,7 @@ User=$SERVICE_USER
 Group=$SERVICE_GROUP
 WorkingDirectory=$APP_DIR
 Environment=PATH=$APP_DIR/venv/bin
-ExecStart=$APP_DIR/venv/bin/python -m src.server.enterprise_backend
+ExecStart=$APP_DIR/venv/bin/python -m src.utils.firebaseBackend
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -591,7 +591,7 @@ EOF
 print_info "Creating supervisor configuration..."
 cat > /etc/supervisor/conf.d/firebase-manager.conf << EOF
 [program:firebase-manager]
-command=$APP_DIR/venv/bin/python -m src.server.enterprise_backend
+command=$APP_DIR/venv/bin/python -m src.utils.firebaseBackend
 directory=$APP_DIR
 user=$SERVICE_USER
 autostart=true
@@ -795,21 +795,8 @@ else
     exit 1
 fi
 
-# Create admin user
-print_info "Creating default admin user..."
-cd $APP_DIR
-sudo -u $SERVICE_USER $APP_DIR/venv/bin/python -c "
-from src.database.connection import db_manager
-from src.database.migrations import create_default_admin
-import asyncio
-
-async def setup_admin():
-    await db_manager.initialize()
-    await create_default_admin()
-    await db_manager.close()
-
-asyncio.run(setup_admin())
-"
+# Create admin user (skip if migrations already handled it)
+print_info "Admin user creation handled by migrations..."
 
 # Final configuration
 print_info "Final configuration..."

@@ -50,10 +50,9 @@ async def migrate_app_users():
                 
                 if not existing:
                     await conn.execute("""
-                        INSERT INTO app_users (id, username, email, password_hash, role, is_active, created_at)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        INSERT INTO app_users (username, email, password_hash, role, is_active, created_at)
+                        VALUES ($1, $2, $3, $4, $5, $6)
                     """, 
-                    user.get('id', None),
                     user.get('username'),
                     user.get('email'),
                     user.get('password_hash'),
@@ -99,18 +98,17 @@ async def migrate_user_permissions(conn, user_id: str, user_data: dict):
                 if is_granted and perm_name not in permissions:
                     permissions.append(perm_name)
         
-        # Insert permissions
-        for perm_name in permissions:
-            await conn.execute("""
-                INSERT INTO user_permissions (id, user_id, permission_name, is_granted, created_at)
-                VALUES ($1, $2, $3, $4, $5)
-            """,
-            None,  # Auto-generate ID
-            user_id,
-            perm_name,
-            True,
-            datetime.now()
-            )
+                            # Insert permissions
+                    for perm_name in permissions:
+                        await conn.execute("""
+                            INSERT INTO user_permissions (user_id, permission_name, is_granted, created_at)
+                            VALUES ($1, $2, $3, $4)
+                        """,
+                        user_id,
+                        perm_name,
+                        True,
+                        datetime.now()
+                        )
         
         logger.info(f"Migrated permissions for user {user_data.get('username')}")
         
@@ -152,10 +150,9 @@ async def migrate_profiles():
                     
                     if not existing:
                         await conn.execute("""
-                            INSERT INTO profiles (id, name, description, owner_id, created_at)
-                            VALUES ($1, $2, $3, $4, $5)
+                            INSERT INTO profiles (name, description, owner_id, created_at)
+                            VALUES ($1, $2, $3, $4)
                         """,
-                        profile.get('id', None),
                         profile.get('name'),
                         profile.get('description'),
                         owner['id'],
@@ -207,15 +204,14 @@ async def migrate_projects():
                         if not existing:
                             await conn.execute("""
                                 INSERT INTO projects (id, name, admin_email, service_account, api_key, owner_id, created_at)
-                                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                                VALUES ($1, $2, $3, $4, $5, $6)
                             """,
                             project_id,
                             project.get('name'),
                             project.get('adminEmail'),
                             json.dumps(project.get('serviceAccount')),
                             project.get('apiKey'),
-                            owner['id'],
-                            datetime.now()
+                            owner['id']
                             )
         finally:
             await db_manager.release_pool_connection(conn)
@@ -262,7 +258,7 @@ async def migrate_campaigns():
                     if not existing:
                         await conn.execute("""
                             INSERT INTO campaigns (id, name, project_id, batch_size, workers, template, status, owner_id, created_at)
-                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                         """,
                         campaign.get('id', None),
                         campaign.get('name'),
@@ -271,8 +267,7 @@ async def migrate_campaigns():
                         5,    # Default workers
                         campaign.get('template'),
                         'draft',
-                        owner['id'],
-                        datetime.now()
+                        owner['id']
                         )
         finally:
             await db_manager.release_pool_connection(conn)
@@ -296,11 +291,10 @@ async def create_default_admin():
             if not admin:
                 # Create admin user
                 admin_id = await conn.fetchval("""
-                    INSERT INTO app_users (id, username, email, password_hash, role, is_active, created_at)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    INSERT INTO app_users (username, email, password_hash, role, is_active, created_at)
+                    VALUES ($1, $2, $3, $4, $5, $6)
                     RETURNING id
                 """,
-                None,  # Auto-generate ID
                 'admin',
                 'admin@firebase-manager.com',
                 '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj/RK.s5u.Ge',  # Default: admin
@@ -314,10 +308,9 @@ async def create_default_admin():
                 
                 for perm_name in admin_permissions:
                     await conn.execute("""
-                        INSERT INTO user_permissions (id, user_id, permission_name, is_granted, created_at)
-                        VALUES ($1, $2, $3, $4, $5)
+                        INSERT INTO user_permissions (user_id, permission_name, is_granted, created_at)
+                        VALUES ($1, $2, $3, $4)
                     """,
-                    None,  # Auto-generate ID
                     admin_id,
                     perm_name,
                     True,

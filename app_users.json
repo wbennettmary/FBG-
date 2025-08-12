@@ -23,7 +23,7 @@
     },
     {
       "username": "larry",
-      "password_hash": "85277ae41884b5f7a2420863b4c0446c0d52fbe3bb0184064634d9ee020ee680",
+      "password_hash": "b1e9f7001624854f395302de97ea39627bee72f2b45e4563d52c8d0b66503689",
       "role": "user",
       "overrides": {
         "projects": true,
