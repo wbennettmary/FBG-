@@ -3,12 +3,20 @@
 # Test Backend Connection and Database Integration
 # Run this after installation to verify everything is working
 
+# Get server IP - FORCE IPv4 only
 echo "🔍 Testing Firebase Manager Backend Connection..."
 echo "================================================"
 
-# Get server IP
-SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || echo "localhost")
-echo "Server IP: $SERVER_IP"
+# Force IPv4 detection
+SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -s ipv4.icanhazip.com 2>/dev/null || curl -s checkip.amazonaws.com 2>/dev/null || echo "localhost")
+
+# Validate IPv4 format
+if [[ $SERVER_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "✅ Server IPv4 detected: $SERVER_IP"
+else
+    echo "⚠️  Could not detect valid IPv4, using localhost"
+    SERVER_IP="localhost"
+fi
 echo ""
 
 # Test 1: Basic backend connectivity

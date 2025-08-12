@@ -135,7 +135,18 @@ sudo -u $SERVICE_USER npm install
 
 # Create frontend environment file for AWS server
 print_info "Creating frontend environment configuration..."
-SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || echo "localhost")
+# Get server IP - FORCE IPv4 only
+print_info "Detecting server IP (IPv4 only)..."
+SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -s ipv4.icanhazip.com 2>/dev/null || echo "localhost")
+print_info "Server IPv4 detected: $SERVER_IP"
+
+# Validate IPv4 format
+if [[ $SERVER_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    print_success "Valid IPv4 address detected: $SERVER_IP"
+else
+    print_warning "Could not detect valid IPv4, using localhost"
+    SERVER_IP="localhost"
+fi
 cat > $APP_DIR/.env.local << EOF
 # Frontend Environment Configuration for AWS Ubuntu Server
 VITE_API_BASE_URL=http://${SERVER_IP}:8000
@@ -299,6 +310,18 @@ rm -f setup_db.py
 
 # Create environment configuration - CRITICAL: This must be loaded by the backend
 print_info "Creating environment configuration..."
+# Get server IP - FORCE IPv4 only
+print_info "Detecting server IP (IPv4 only)..."
+SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -s ipv4.icanhazip.com 2>/dev/null || echo "localhost")
+print_info "Server IPv4 detected: $SERVER_IP"
+
+# Validate IPv4 format
+if [[ $SERVER_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    print_success "Valid IPv4 address detected: $SERVER_IP"
+else
+    print_warning "Could not detect valid IPv4, using localhost"
+    SERVER_IP="localhost"
+fi
 cat > $APP_DIR/.env << EOF
 # AWS Ubuntu Firebase Manager Configuration
 USE_DATABASE=true
@@ -319,6 +342,18 @@ chmod 600 $APP_DIR/.env
 
 # CRITICAL: Create a startup script that loads environment variables
 print_info "Creating startup script with environment loading..."
+# Get server IP - FORCE IPv4 only
+print_info "Detecting server IP (IPv4 only)..."
+SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -s ipv4.icanhazip.com 2>/dev/null || echo "localhost")
+print_info "Server IPv4 detected: $SERVER_IP"
+
+# Validate IPv4 format
+if [[ $SERVER_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    print_success "Valid IPv4 address detected: $SERVER_IP"
+else
+    print_warning "Could not detect valid IPv4, using localhost"
+    SERVER_IP="localhost"
+fi
 cat > $APP_DIR/start_backend.sh << 'EOF'
 #!/bin/bash
 cd /var/www/firebase-manager
@@ -335,6 +370,18 @@ chown $SERVICE_USER:$SERVICE_GROUP $APP_DIR/start_backend.sh
 
 # Create systemd service - CRITICAL: Use the startup script
 print_info "Creating systemd service..."
+# Get server IP - FORCE IPv4 only
+print_info "Detecting server IP (IPv4 only)..."
+SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -s ipv4.icanhazip.com 2>/dev/null || echo "localhost")
+print_info "Server IPv4 detected: $SERVER_IP"
+
+# Validate IPv4 format
+if [[ $SERVER_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    print_success "Valid IPv4 address detected: $SERVER_IP"
+else
+    print_warning "Could not detect valid IPv4, using localhost"
+    SERVER_IP="localhost"
+fi
 cat > /etc/systemd/system/firebase-manager.service << EOF
 [Unit]
 Description=Firebase Manager Professional Server
@@ -359,6 +406,18 @@ EOF
 
 # Create supervisor configuration
 print_info "Creating supervisor configuration..."
+# Get server IP - FORCE IPv4 only
+print_info "Detecting server IP (IPv4 only)..."
+SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -s ipv4.icanhazip.com 2>/dev/null || echo "localhost")
+print_info "Server IPv4 detected: $SERVER_IP"
+
+# Validate IPv4 format
+if [[ $SERVER_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    print_success "Valid IPv4 address detected: $SERVER_IP"
+else
+    print_warning "Could not detect valid IPv4, using localhost"
+    SERVER_IP="localhost"
+fi
 cat > /etc/supervisor/conf.d/firebase-manager.conf << EOF
 [program:firebase-manager]
 command=$APP_DIR/start_backend.sh
@@ -378,6 +437,18 @@ chown -R $SERVICE_USER:$SERVICE_GROUP $APP_DIR/logs
 
 # Configure Nginx
 print_info "Configuring Nginx..."
+# Get server IP - FORCE IPv4 only
+print_info "Detecting server IP (IPv4 only)..."
+SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -s ipv4.icanhazip.com 2>/dev/null || echo "localhost")
+print_info "Server IPv4 detected: $SERVER_IP"
+
+# Validate IPv4 format
+if [[ $SERVER_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    print_success "Valid IPv4 address detected: $SERVER_IP"
+else
+    print_warning "Could not detect valid IPv4, using localhost"
+    SERVER_IP="localhost"
+fi
 cat > /etc/nginx/sites-available/firebase-manager << EOF
 server {
     listen 80;
@@ -474,7 +545,18 @@ else
 fi
 
 # Get server IP
-SERVER_IP=$(curl -s ifconfig.me 2>/dev/null || echo "localhost")
+# Get server IP - FORCE IPv4 only
+print_info "Detecting server IP (IPv4 only)..."
+SERVER_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -s ipv4.icanhazip.com 2>/dev/null || echo "localhost")
+print_info "Server IPv4 detected: $SERVER_IP"
+
+# Validate IPv4 format
+if [[ $SERVER_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    print_success "Valid IPv4 address detected: $SERVER_IP"
+else
+    print_warning "Could not detect valid IPv4, using localhost"
+    SERVER_IP="localhost"
+fi
 print_info "Server IP detected: $SERVER_IP"
 
 # Test if frontend is accessible
